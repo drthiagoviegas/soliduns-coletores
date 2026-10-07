@@ -1,5 +1,11 @@
 """
-SOLIDUNS — AGENTE DE LEILÕES — Acompanhamento dos PROCESSOS dos leilões judiciais — v1.2 (07/10/2026)
+SOLIDUNS — AGENTE DE LEILÕES — Acompanhamento dos PROCESSOS dos leilões judiciais — v1.3 (07/10/2026)
+
+v1.3 (1ª execução da v1.2: ~40 s por processo no Datajud; só 28 de 204 em 20 min): (1) pede ao Datajud SÓ os
+campos usados (classe, órgão e movimentações) — resposta menor; (2) PRIORIDADE e RODÍZIO: entram na fila os
+nunca consultados / com erro e os com PRAÇA nos próximos 15 dias (todo dia); os demais, a cada 3 dias — os de
+praça mais próxima primeiro; (3) roda numa ROTINA PRÓPRIA (.github/workflows/leiloes-processos.yml), 4 vezes
+por dia (10h, 14h, 18h, 22h de Brasília), até 50 min cada — custo zero (repositório público).
 
 v1.2 (diagnóstico pelos erros gravados em 07/10): o Datajud NÃO bloqueia o GitHub — o acesso direto funcionou
 (TJSP, TJCE, TRT10/12/15/18 ok). As falhas eram LENTIDÃO ("Read timed out" nos tribunais grandes) e LIMITE DE
@@ -38,12 +44,16 @@ import unicodedata
 
 import requests
 
-VERSAO = "1.2"
+VERSAO = "1.3"
 UA = "SOLIDUNS-coletor/1.0 (+https://soliduns.com.br; contato@soliduns.com.br)"
 DATAJUD = os.environ.get("DATAJUD_URL_TESTE") or "https://api-publica.datajud.cnj.jus.br/api_publica_{trib}/_search"  # a variável só existe nos testes
 PAUSA = float(os.environ.get("DATAJUD_PAUSA_TESTE") or 2.0)                      # segundos entre consultas (gentil com o serviço público)
 MAX_PROCESSOS = 1500             # teto de segurança por execução
-TEMPO_MAX = float(os.environ.get("DATAJUD_TEMPO_MAX") or 20 * 60)   # segundos por execução
+TEMPO_MAX = float(os.environ.get("DATAJUD_TEMPO_MAX") or 50 * 60)   # segundos por execução (rotina própria, 4x/dia)
+DIAS_PRACA_PERTO = 15            # praça até 15 dias à frente: reconsulta todo dia
+DIAS_RODIZIO = 3                 # demais: reconsulta a cada 3 dias
+CAMPOS = ["classe.nome", "orgaoJulgador.nome", "movimentos.nome", "movimentos.dataHora",
+          "movimentos.complementosTabelados.nome", "movimentos.complementosTabelados.descricao"]   # só o que o robô usa
 ESPERA = float(os.environ.get("DATAJUD_ESPERA_TESTE") or 60)   # segundos máximos por consulta (o Datajud é lento nos grandes)
 ESPERA_429 = [float(x) for x in (os.environ.get("DATAJUD_429_TESTE") or "30,60,90").split(",")]   # espera após "devagar"
 RELAY = os.environ.get("DJEN_RELAY_URL") or "https://evcsniicnrlrtzpdmeza.supabase.co/functions/v1/swift-api"
@@ -134,19 +144,24 @@ def sb(metodo, caminho, **kw):
 
 
 def processos_do_radar():
-    """Processos dos leilões judiciais ativos: {digitos: (tribunal, data de referência)}."""
+    """Processos dos leilões judiciais ativos: {digitos: (tribunal, data de referência, praça mais próxima)}."""
     out, off = {}, 0
     while True:
-        lote = sb("GET", "leiloes_radar?select=processo,tribunal,data_lista,primeira_vez&fonte=eq.djen&situacao=eq.ativo"
+        lote = sb("GET", "leiloes_radar?select=processo,tribunal,data_lista,primeira_vez,praca1,praca2&fonte=eq.djen&situacao=eq.ativo"
                          "&order=id.asc&limit=1000&offset=" + str(off))
         for r in lote:
             d = so_digitos(r.get("processo"))
             if not d or not r.get("tribunal"):
                 continue
             ref = (r.get("data_lista") or (r.get("primeira_vez") or "")[:10] or dt.date.today().isoformat())[:10]
+            hoje = dt.date.today().isoformat()
+            pracas = sorted(p[:10] for p in (r.get("praca1"), r.get("praca2")) if p and p[:10] >= hoje)
+            praca = pracas[0] if pracas else None
             ant = out.get(d)
-            if not ant or ref < ant[1]:
-                out[d] = (r["tribunal"], ref)
+            if not ant:
+                out[d] = (r["tribunal"], ref, praca)
+            else:
+                out[d] = (ant[0], min(ant[1], ref), min([x for x in (ant[2], praca) if x], default=None))
         if len(lote) < 1000:
             return out
         off += 1000
@@ -164,9 +179,22 @@ def main():
         return 0
     procs = processos_do_radar()
     hoje = agora.date().isoformat()
-    ja = {p["processo"]: p for p in sb("GET", "leiloes_processos?select=processo,consultado_em,erro&limit=5000")}
-    fila = [(d, t, ref) for d, (t, ref) in sorted(procs.items())        # pula só o que já deu CERTO hoje
-            if not (ja.get(d) and (ja[d]["consultado_em"] or "")[:10] == hoje and not ja[d].get("erro"))][:MAX_PROCESSOS]
+    ja = {p["processo"]: p for p in sb("GET", "leiloes_processos?select=processo,consultado_em,erro,encontrado&limit=5000")}
+    perto = (agora.date() + dt.timedelta(days=DIAS_PRACA_PERTO)).isoformat()
+    rodizio = (agora.date() - dt.timedelta(days=DIAS_RODIZIO - 1)).isoformat()
+    fila = []
+    for d, (t, ref, praca) in procs.items():
+        j = ja.get(d)
+        ult = ((j or {}).get("consultado_em") or "")[:10]
+        if j and not j.get("erro") and ult == hoje:
+            continue                                            # já deu certo hoje
+        nunca_ou_erro = (not j) or bool(j.get("erro"))
+        praca_perto = bool(praca and praca <= perto)
+        if not (nunca_ou_erro or praca_perto or ult < rodizio):
+            continue                                            # fica para o rodízio
+        prioridade = 0 if nunca_ou_erro else (1 if praca_perto else 2)
+        fila.append((prioridade, praca or "9999-12-31", d, t, ref))
+    fila = [(d, t, ref) for _, _, d, t, ref in sorted(fila)][:MAX_PROCESSOS]
     print(f"  processos de leilões judiciais ativos: {len(procs)} | a consultar hoje: {len(fila)}")
     ses = requests.Session()
     ses.headers.update({"Authorization": "APIKey " + chave, "Content-Type": "application/json", "User-Agent": UA})
@@ -178,7 +206,7 @@ def main():
         """(status, json|None). Rede: lança exceção. 429: espera e repete (até 3 vezes)."""
         for n429 in range(len(ESPERA_429) + 1):
             if estado["modo"] == "direto":
-                r = ses.post(DATAJUD.format(trib=trib.lower()), data=json.dumps({"query": {"match": {"numeroProcesso": d}}, "size": 10}),
+                r = ses.post(DATAJUD.format(trib=trib.lower()), data=json.dumps({"query": {"match": {"numeroProcesso": d}}, "size": 10, "_source": CAMPOS}),
                              timeout=(15, ESPERA))
             else:
                 r = requests.get(RELAY, params={"forceFunctionRegion": "sa-east-1", "datajud": "1", "tribunal": trib, "processo": d},

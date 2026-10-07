@@ -1,0 +1,40 @@
+# SOLIDUNS — AGENTE DE LEILÕES — rotina "Leilões - processos (Datajud)" — v1.0 (07/10/2026)
+# Acompanha os processos dos leilões judiciais na API pública do Datajud (CNJ).
+# Rotina PRÓPRIA (separada da "Leilões" das 7h) porque o Datajud é lento (~40 s por processo):
+# 4 vezes por dia — 10h, 14h, 18h e 22h de Brasília (13, 17, 21 e 1 UTC) —, até 50 min cada.
+# Custo zero: repositório público (o GitHub não cobra minutos de repositório público).
+# "concurrency" impede duas execuções ao mesmo tempo (evita o limite 429 do Datajud).
+name: Leilões - processos (Datajud)
+
+on:
+  schedule:
+    - cron: "0 13,17,21,1 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: leiloes-processos
+  cancel-in-progress: false
+
+jobs:
+  processos:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install requests
+
+      - name: Acompanhar processos (Datajud)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DATAJUD_API_KEY: ${{ secrets.DATAJUD_API_KEY }}
+          DJEN_TOKEN: ${{ secrets.DJEN_TOKEN }}
+          DJEN_RELAY_URL: https://evcsniicnrlrtzpdmeza.supabase.co/functions/v1/swift-api
+          DATAJUD_TEMPO_MAX: "3000"
+        run: python coletor/acompanhar_processos_leiloes.py
