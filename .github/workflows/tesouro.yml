@@ -1,0 +1,35 @@
+# SOLIDUNS — Tesouro Direto (SQL 50): preços e taxas dos títulos públicos
+# (Tesouro Transparente, dados abertos do Tesouro Nacional).
+# De segunda a sexta às 11h de Brasília (14h UTC); também à mão em:
+# Actions -> "Tesouro Direto" -> Run workflow.
+name: Tesouro Direto
+
+on:
+  schedule:
+    - cron: "0 14 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tesouro:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v5
+
+      - name: Preparar o Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install -r coletor/requirements.txt
+
+      - name: Tesouro Transparente e gravar no Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python coletor/coletar_tesouro.py

@@ -1,0 +1,36 @@
+# SOLIDUNS — preços DIÁRIOS do mercado americano (SQL 45)
+# De terça a sábado às 8h30 de Brasília (11h30 UTC): fechamento do pregão
+# anterior de todas as ações (Massive, uma consulta por dia) + recálculo dos
+# indicadores. Também pode ser disparada à mão: Actions -> "Preços EUA".
+name: Preços EUA
+
+on:
+  schedule:
+    - cron: "30 11 * * 2-6"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  precos:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v5
+
+      - name: Preparar o Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install -r coletor/requirements.txt
+
+      - name: Preços (Massive) e indicadores no Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+        run: python coletor/coletar_eua.py --precos

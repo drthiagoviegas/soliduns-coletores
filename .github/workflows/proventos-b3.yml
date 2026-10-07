@@ -1,0 +1,36 @@
+# SOLIDUNS — proventos da B3 (Agenda de dividendos, SQL 44)
+# Roda de segunda a sexta às 8h de Brasília (11h UTC) e também pode ser
+# disparada à mão em: Actions -> "Proventos B3" -> Run workflow.
+# Consulta só a B3 (uma chamada por empresa, ~4 min); a lista de ações vem
+# do próprio banco (gravada pela "Coleta CVM").
+name: Proventos B3
+
+on:
+  schedule:
+    - cron: "0 11 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proventos:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v5
+
+      - name: Preparar o Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install -r coletor/requirements.txt
+
+      - name: Consultar a B3 e gravar no Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python coletor/coletar_cvm.py --so-proventos

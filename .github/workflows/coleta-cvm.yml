@@ -1,0 +1,34 @@
+# SOLIDUNS — coleta semanal das demonstrações financeiras da CVM
+# Roda toda segunda e quinta-feira às 10h de Brasília (13h UTC) e também
+# pode ser disparada à mão em: Actions -> "Coleta CVM" -> Run workflow.
+name: Coleta CVM
+
+on:
+  schedule:
+    - cron: "0 13 * * 1,4"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  coletar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v5
+
+      - name: Preparar o Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install -r coletor/requirements.txt
+
+      - name: Coletar, calcular e gravar no Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python coletor/coletar_cvm.py

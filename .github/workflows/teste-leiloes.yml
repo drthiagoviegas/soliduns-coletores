@@ -1,0 +1,31 @@
+# SOLIDUNS — Agente de leilões — TESTE DE ACESSO ÀS FONTES (v1.0, 04/10/2026)
+# Roda SÓ quando você clica em "Run workflow". Não tem horário, não grava no banco.
+name: Leilões - teste de fontes
+
+on:
+  workflow_dispatch:
+
+jobs:
+  teste:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install requests
+
+      - name: Testar DJEN e Caixa
+        run: python coletor/testar_fontes_leiloes.py
+
+      - name: Guardar amostras
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: amostras-leiloes
+          path: amostras/
+          retention-days: 14

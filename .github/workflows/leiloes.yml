@@ -1,0 +1,53 @@
+# SOLIDUNS — Rotina "Leilões" — v1.1 (05/10/2026)
+# Etapa 1: Radar da Caixa (8 UFs). Etapa 2: leilões judiciais (DJEN via São Paulo + leitura por IA).
+# A etapa 2 nunca derruba a 1 (continue-on-error).
+# Todo dia às 7h (Brasília) = 10h UTC. Também roda pelo botão "Run workflow".
+# Grava em public.leiloes_radar (SQL 57). Segredos: os mesmos das outras rotinas.
+name: Leilões
+
+on:
+  schedule:
+    - cron: "0 10 * * *"
+  workflow_dispatch:
+    inputs:
+      forcar:
+        description: "Regravar mesmo se a lista da Caixa não mudou"
+        type: boolean
+        default: false
+
+jobs:
+  radar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install requests
+
+      - name: Coletar Radar da Caixa
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          if [ "${{ inputs.forcar }}" = "true" ]; then
+            python coletor/coletar_leiloes.py --forcar
+          else
+            python coletor/coletar_leiloes.py
+          fi
+
+      - name: Coletar leilões judiciais (DJEN + IA)
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DJEN_TOKEN: ${{ secrets.DJEN_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LEILOES_IA_MAX: "120"
+          # endereço da função em São Paulo (o Supabase deu o nome "swift-api")
+          DJEN_RELAY_URL: https://evcsniicnrlrtzpdmeza.supabase.co/functions/v1/swift-api
+        run: python coletor/coletar_leiloes_judiciais.py

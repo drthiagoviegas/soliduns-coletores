@@ -1,0 +1,35 @@
+# SOLIDUNS — FIIs (SQL 46): Informe Mensal da CVM + último fechamento +
+# rendimentos (consulta pública de fundos da B3).
+# De segunda a sexta às 9h de Brasília (12h UTC); também à mão em:
+# Actions -> "FIIs" -> Run workflow.
+name: FIIs
+
+on:
+  schedule:
+    - cron: "0 12 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fiis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v5
+
+      - name: Preparar o Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install -r coletor/requirements.txt
+
+      - name: CVM + B3 e gravar no Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python coletor/coletar_fii.py

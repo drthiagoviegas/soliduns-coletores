@@ -1,0 +1,36 @@
+# SOLIDUNS — coleta SEMANAL do mercado americano (SQL 45)
+# Domingo às 7h de Brasília (10h UTC): balanços de todas as empresas da NYSE
+# e da Nasdaq (SEC, arquivo único companyfacts.zip ~1 GB) + preços (Massive)
+# + indicadores. Também pode ser disparada à mão: Actions -> "Coleta EUA".
+name: Coleta EUA
+
+on:
+  schedule:
+    - cron: "0 10 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  coletar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v5
+
+      - name: Preparar o Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install -r coletor/requirements.txt
+
+      - name: Coletar SEC + Massive e gravar no Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+        run: python coletor/coletar_eua.py
