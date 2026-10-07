@@ -1,5 +1,9 @@
 """
-SOLIDUNS — AGENTE DE LEILÕES — Coletor dos LEILÕES JUDICIAIS — v1.4 (05/10/2026)
+SOLIDUNS — AGENTE DE LEILÕES — Coletor dos LEILÕES JUDICIAIS — v1.5 (07/10/2026)
+
+v1.5: mais 6 estados (RJ, PR, SC, RS, ES, PE) e 14 tribunais (TJRJ, TJPR, TJSC, TJRS,
+TJES, TJPE, TRF2, TRF4, TRT1, TRT4, TRT6, TRT9, TRT12, TRT17) — total 35 tribunais. Exige a
+função de São Paulo (swift-api) na v1.2.
 
 v1.4: inclui o TRF6 (Justiça Federal de Minas Gerais, desde 2022) — exige a
 função de São Paulo (djen-relay) v1.1, que aceita o TRF6.
@@ -57,13 +61,16 @@ import time
 
 import requests
 
-VERSAO = "1.4"
+VERSAO = "1.5"
 TRIBUNAIS = ["TJDFT", "TJGO", "TJSP", "TJMG", "TJBA", "TJCE", "TJPB", "TJRN",
-             "TRF1", "TRF3", "TRF5", "TRF6", "TRT2", "TRT3", "TRT5", "TRT7", "TRT10", "TRT13", "TRT15", "TRT18", "TRT21"]
+             "TRF1", "TRF3", "TRF5", "TRF6", "TRT2", "TRT3", "TRT5", "TRT7", "TRT10", "TRT13", "TRT15", "TRT18", "TRT21",
+             "TJRJ", "TJPR", "TJSC", "TJRS", "TJES", "TJPE", "TRF2", "TRF4", "TRT1", "TRT4", "TRT6", "TRT9", "TRT12", "TRT17"]
 UF_DO_TRIBUNAL = {"TJDFT": "DF", "TJGO": "GO", "TJSP": "SP", "TJMG": "MG", "TJBA": "BA", "TJCE": "CE",
                   "TJPB": "PB", "TJRN": "RN", "TRT2": "SP", "TRT3": "MG", "TRT5": "BA", "TRT7": "CE",
-                  "TRT10": "DF", "TRT13": "PB", "TRT15": "SP", "TRT18": "GO", "TRT21": "RN", "TRF6": "MG"}  # TRFs: vários estados
-UFS = {"DF", "GO", "SP", "RN", "PB", "CE", "BA", "MG"}
+                  "TRT10": "DF", "TRT13": "PB", "TRT15": "SP", "TRT18": "GO", "TRT21": "RN", "TRF6": "MG",
+                  "TJRJ": "RJ", "TJPR": "PR", "TJSC": "SC", "TJRS": "RS", "TJES": "ES", "TJPE": "PE", "TRT1": "RJ", "TRT4": "RS",
+                  "TRT6": "PE", "TRT9": "PR", "TRT12": "SC", "TRT17": "ES"}  # TRFs: vários estados
+UFS = {"DF", "GO", "SP", "RN", "PB", "CE", "BA", "MG", "RJ", "PR", "SC", "RS", "ES", "PE"}
 TIPOS = {"apartamento", "cobertura", "kitnet", "casa", "sobrado", "casa_condominio", "terreno_urbano",
          "lote_condominio", "sala_comercial", "loja", "galpao", "predio_comercial", "hotel_pousada",
          "chacara", "sitio", "fazenda", "area_rural", "gleba", "outros"}
@@ -241,7 +248,7 @@ TIPOS_PALAVRA = [(r"apartamento|\bapto\b|unidade aut[oô]noma", "apartamento"), 
                  (r"terreno|\blote\b", "terreno_urbano")]
 
 
-REGRAS_VERSAO = "regras-v3"
+REGRAS_VERSAO = "regras-v4"
 RA_DF = ["Plano Piloto", "Asa Sul", "Asa Norte", "Lago Sul", "Lago Norte", "Taguatinga", "Ceilândia", "Águas Claras", "Gama",
          "Sobradinho", "Planaltina", "Samambaia", "Guará", "Brazlândia", "Recanto das Emas", "Riacho Fundo", "Santa Maria",
          "São Sebastião", "Paranoá", "Núcleo Bandeirante", "Cruzeiro", "Sudoeste", "Park Way", "Vicente Pires", "Itapoã",
@@ -249,7 +256,8 @@ RA_DF = ["Plano Piloto", "Asa Sul", "Asa Norte", "Lago Sul", "Lago Norte", "Tagu
 ESTADO_NOME = {"distrito federal": "DF", "goias": "GO", "sao paulo": "SP", "minas gerais": "MG", "bahia": "BA", "ceara": "CE",
                "paraiba": "PB", "rio grande do norte": "RN", "para": "PA", "maranhao": "MA", "piaui": "PI", "pernambuco": "PE",
                "alagoas": "AL", "sergipe": "SE", "mato grosso do sul": "MS", "mato grosso": "MT", "tocantins": "TO",
-               "amazonas": "AM", "acre": "AC", "rondonia": "RO", "roraima": "RR", "amapa": "AP"}
+               "amazonas": "AM", "acre": "AC", "rondonia": "RO", "roraima": "RR", "amapa": "AP",
+               "rio de janeiro": "RJ", "parana": "PR", "santa catarina": "SC", "rio grande do sul": "RS", "espirito santo": "ES"}
 _MUNICIPIOS = {}
 
 
@@ -285,7 +293,7 @@ def cidade_oficial(trecho, uf):
 def uf_federal(t):
     """Estado de um processo da Justiça Federal pelo texto (Seção/Subseção Judiciária)."""
     tl = _sa(t)
-    m = re.search(r"se[cç][aã]o judici[aá]ria (?:do |da |de )?(?:estado (?:do |da |de )?)?([a-z ]{4,25}?)(?=[\s,.;/\-]|$)", tl)
+    m = re.search(r"se[cç][aã]o judici[aá]ria (?:do |da |de )?(?:estado (?:do |da |de )?)?([a-z ]{4,40})", tl)   # v1.5: nomes compostos
     if m:
         nome = m.group(1).strip()
         for k in sorted(ESTADO_NOME, key=len, reverse=True):
@@ -537,7 +545,7 @@ def main():
     usar_ia = bool(os.environ.get("ANTHROPIC_API_KEY"))
     log(f"Modo de leitura: {'IA (' + MODELO + ')' if usar_ia else 'REGRAS FIXAS (custo zero)'}")
     fila = sb_get("leiloes_djen?select=id,tribunal,data,processo,orgao,link,texto,tentativas"
-                  "&or=(status.eq.novo,and(status.eq.erro,tentativas.lt.3)" + ("" if usar_ia else ",modelo.eq.regras-v1,modelo.eq.regras-v2") + ")"
+                  "&or=(status.eq.novo,and(status.eq.erro,tentativas.lt.3)" + ("" if usar_ia else ",modelo.eq.regras-v1,modelo.eq.regras-v2,modelo.eq.regras-v3") + ")"
                   "&order=data.desc&limit="
                   + str(IA_MAX if usar_ia else 2000))
     lidos = radar = tin = tout = 0

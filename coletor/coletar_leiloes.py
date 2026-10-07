@@ -1,5 +1,7 @@
 """
-SOLIDUNS — AGENTE DE LEILÕES — Coletor do RADAR — v1.2 (05/10/2026)
+SOLIDUNS — AGENTE DE LEILÕES — Coletor do RADAR — v1.3 (07/10/2026)
+
+v1.3: mais 6 estados (pedido do Thiago, 07/10) — RJ, PR, SC, RS, ES e PE (total: 14 UFs).
 
 v1.2: depois das UFs, recalcula a PRÉ-NOTA de todos os imóveis ativos
 (public.leiloes_radar_pontuar(), SQL 58). Falha aqui só avisa.
@@ -54,11 +56,11 @@ from urllib import robotparser
 
 import requests
 
-VERSAO = "1.2"
+VERSAO = "1.3"
 UA = "SOLIDUNS-coletor/1.0 (+https://soliduns.com.br; contato@soliduns.com.br)"
 CAIXA_BASE = "https://venda-imoveis.caixa.gov.br"
 CAIXA_URL = CAIXA_BASE + "/listaweb/Lista_imoveis_{uf}.csv"
-UFS_PADRAO = ["DF", "GO", "SP", "RN", "PB", "CE", "BA", "MG"]
+UFS_PADRAO = ["DF", "GO", "SP", "RN", "PB", "CE", "BA", "MG", "RJ", "PR", "SC", "RS", "ES", "PE"]
 FONTE = "caixa"
 
 relatorio = []
