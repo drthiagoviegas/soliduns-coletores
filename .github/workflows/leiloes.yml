@@ -58,4 +58,6 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           DATAJUD_API_KEY: ${{ secrets.DATAJUD_API_KEY }}
+          DJEN_TOKEN: ${{ secrets.DJEN_TOKEN }}
+          DJEN_RELAY_URL: https://evcsniicnrlrtzpdmeza.supabase.co/functions/v1/swift-api
         run: python coletor/acompanhar_processos_leiloes.py
