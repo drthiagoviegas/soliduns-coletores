@@ -1,5 +1,9 @@
 """
-SOLIDUNS — AGENTE DE LEILÕES — Acompanhamento dos PROCESSOS dos leilões judiciais — v1.3 (07/10/2026)
+SOLIDUNS — AGENTE DE LEILÕES — Acompanhamento dos PROCESSOS dos leilões judiciais — v1.4 (07/10/2026)
+
+v1.4: "Baixa Definitiva" só vira alerta de EXTINÇÃO quando acontece na 1ª instância (vara: grau G1/JE). Vinda do
+tribunal (G2) ou de tribunal superior, é só o RETORNO do recurso à vara e não ameaça o leilão (caso real do TRT17,
+São Mateus/ES, 07/10). "Extinção" e "arquivamento definitivo" continuam alertando em qualquer instância.
 
 v1.3 (1ª execução da v1.2: ~40 s por processo no Datajud; só 28 de 204 em 20 min): (1) pede ao Datajud SÓ os
 campos usados (classe, órgão e movimentações) — resposta menor; (2) PRIORIDADE e RODÍZIO: entram na fila os
@@ -44,7 +48,7 @@ import unicodedata
 
 import requests
 
-VERSAO = "1.3"
+VERSAO = "1.4"
 UA = "SOLIDUNS-coletor/1.0 (+https://soliduns.com.br; contato@soliduns.com.br)"
 DATAJUD = os.environ.get("DATAJUD_URL_TESTE") or "https://api-publica.datajud.cnj.jus.br/api_publica_{trib}/_search"  # a variável só existe nos testes
 PAUSA = float(os.environ.get("DATAJUD_PAUSA_TESTE") or 2.0)                      # segundos entre consultas (gentil com o serviço público)
@@ -52,7 +56,7 @@ MAX_PROCESSOS = 1500             # teto de segurança por execução
 TEMPO_MAX = float(os.environ.get("DATAJUD_TEMPO_MAX") or 50 * 60)   # segundos por execução (rotina própria, 4x/dia)
 DIAS_PRACA_PERTO = 15            # praça até 15 dias à frente: reconsulta todo dia
 DIAS_RODIZIO = 3                 # demais: reconsulta a cada 3 dias
-CAMPOS = ["classe.nome", "orgaoJulgador.nome", "movimentos.nome", "movimentos.dataHora",
+CAMPOS = ["grau", "classe.nome", "orgaoJulgador.nome", "movimentos.nome", "movimentos.dataHora",
           "movimentos.complementosTabelados.nome", "movimentos.complementosTabelados.descricao"]   # só o que o robô usa
 ESPERA = float(os.environ.get("DATAJUD_ESPERA_TESTE") or 60)   # segundos máximos por consulta (o Datajud é lento nos grandes)
 ESPERA_429 = [float(x) for x in (os.environ.get("DATAJUD_429_TESTE") or "30,60,90").split(",")]   # espera após "devagar"
@@ -103,9 +107,10 @@ def ler_resposta(dados):
         s = h.get("_source") or {}
         classe = classe or (s.get("classe") or {}).get("nome")
         orgao = orgao or (s.get("orgaoJulgador") or {}).get("nome")
+        grau = (s.get("grau") or "").upper()
         for m in (s.get("movimentos") or []):
             if m.get("dataHora"):
-                movs.append(m)
+                movs.append(dict(m, _grau=grau))
     vistos, unicos = set(), []
     for m in sorted(movs, key=lambda x: x.get("dataHora") or "", reverse=True):
         k = (m.get("dataHora"), m.get("nome"))
@@ -125,6 +130,9 @@ def classificar(movs, desde):
         t = texto_mov(m)
         for tipo, rx in ALERTAS:
             if re.search(rx, t) and tipo not in achados:
+                if (tipo == "extincao" and "baixa definitiva" in t and not re.search(r"extin|arquivamento definitivo", t)
+                        and m.get("_grau") not in ("G1", "JE", "")):
+                    continue                                    # baixa vinda do tribunal = retorno do recurso à vara
                 achados[tipo] = m
     if not achados:
         return [], None, None, None

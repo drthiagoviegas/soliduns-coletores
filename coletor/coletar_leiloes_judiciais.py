@@ -1,5 +1,7 @@
 """
-SOLIDUNS — AGENTE DE LEILÕES — Coletor dos LEILÕES JUDICIAIS — v1.5 (07/10/2026)
+SOLIDUNS — AGENTE DE LEILÕES — Coletor dos LEILÕES JUDICIAIS — v1.6 (07/10/2026)
+
+v1.6: só textos — o resumo dizia "nos 8 estados"; agora mostra o número real de estados do projeto (14).
 
 v1.5: mais 6 estados (RJ, PR, SC, RS, ES, PE) e 14 tribunais (TJRJ, TJPR, TJSC, TJRS,
 TJES, TJPE, TRF2, TRF4, TRT1, TRT4, TRT6, TRT9, TRT12, TRT17) — total 35 tribunais. Exige a
@@ -18,7 +20,7 @@ existir na lista oficial de municípios do IBGE daquele estado; (2) nos TRFs
 (vários estados) o estado vem da "Seção/Subseção Judiciária" — sem certeza,
 o imóvel NÃO entra; (3) "cobertura" e "fazenda" só com sentido de imóvel;
 (4) editais lidos pelas regras antigas são RELIDOS e corrigidos (ou saem do
-Radar, se deixarem de ser imóvel nos 8 estados).
+Radar, se deixarem de ser imóvel nos estados do projeto).
 
 v1.1: DOIS MODOS DE LEITURA, escolhidos sozinhos:
   - SEM a chave ANTHROPIC_API_KEY -> lê por REGRAS FIXAS (custo ZERO;
@@ -33,14 +35,14 @@ Grava em public.leiloes_djen e public.leiloes_radar (SQL 62).
 FLUXO (AGENTE):
   1. Busca no DJEN, pela função djen-relay do Supabase em São Paulo (o DJEN
      bloqueia acessos de fora do Brasil), as publicações com "leilão" dos
-     20 tribunais dos 8 estados, nos últimos DIAS dias.
+     35 tribunais dos 14 estados do projeto, nos últimos DIAS dias.
   2. REGRA (grátis): fica só o que parece EDITAL de leilão e cita imóvel.
      Publicação já vista (mesmo id) não é lida de novo.
   3. IA (Claude, paga por uso): lê cada edital e devolve os dados em JSON:
      processo, lotes (tipo, endereço, cidade/UF, áreas, matrícula,
      avaliação, lances, datas das praças, ocupação/ônus/débitos citados),
      leiloeiro e site. Teto: LEILOES_IA_MAX editais por execução.
-  4. Cada lote de IMÓVEL num dos 8 estados vira item do Radar
+  4. Cada lote de IMÓVEL num dos 14 estados do projeto vira item do Radar
      (id "djen-<id>-<n>", modalidade "judicial"). Sem dado pessoal.
   5. Tira do Radar o leilão cuja última praça passou e recalcula a
      pré-nota (funções do SQL 62 e 58).
@@ -61,7 +63,7 @@ import time
 
 import requests
 
-VERSAO = "1.5"
+VERSAO = "1.6"
 TRIBUNAIS = ["TJDFT", "TJGO", "TJSP", "TJMG", "TJBA", "TJCE", "TJPB", "TJRN",
              "TRF1", "TRF3", "TRF5", "TRF6", "TRT2", "TRT3", "TRT5", "TRT7", "TRT10", "TRT13", "TRT15", "TRT18", "TRT21",
              "TJRJ", "TJPR", "TJSC", "TJRS", "TJES", "TJPE", "TRF2", "TRF4", "TRT1", "TRT4", "TRT6", "TRT9", "TRT12", "TRT17"]
@@ -561,7 +563,7 @@ def main():
             for x in itens:
                 x.update(situacao="ativo", visto_em=agora, saiu_em=None, coletado_em=agora)
             sb_upsert("leiloes_radar", itens)
-            if status != "ia_ok":                   # releitura: deixou de ser imóvel nos 8 estados -> sai do Radar
+            if status != "ia_ok":                   # releitura: deixou de ser imóvel nos estados do projeto -> sai do Radar
                 retirar_do_radar(ia.get("processo") or pub.get("processo"), pub["id"])
             radar += len(itens); tin += a; tout += b; lidos += 1
             contagem[status] += 1
@@ -577,8 +579,8 @@ def main():
                 break
     custo = tin / 1e6 * 1 + tout / 1e6 * 5
     log("")
-    log(f"{'IA' if usar_ia else 'Regras'}: {lidos} edital(is) lido(s) | {contagem['ia_ok']} com imóvel nos 8 estados -> {radar} item(ns) no Radar | "
-        f"{contagem['nao_imovel']} sem imóvel | {contagem['fora_uf']} fora dos 8 estados | {contagem['erro']} erro(s)")
+    log(f"{'IA' if usar_ia else 'Regras'}: {lidos} edital(is) lido(s) | {contagem['ia_ok']} com imóvel nos {len(UFS)} estados -> {radar} item(ns) no Radar | "
+        f"{contagem['nao_imovel']} sem imóvel | {contagem['fora_uf']} fora dos {len(UFS)} estados | {contagem['erro']} erro(s)")
     if usar_ia:
         log(f"IA: {tin} + {tout} tokens (estimativa ~US$ {custo:.2f} no preço do Haiku 4.5)")
 
