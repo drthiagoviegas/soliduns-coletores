@@ -1,5 +1,11 @@
 """
-SOLIDUNS — AGENTE DE LEILÕES — Acompanhamento dos PROCESSOS dos leilões judiciais — v1.0 (07/10/2026)
+SOLIDUNS — AGENTE DE LEILÕES — Acompanhamento dos PROCESSOS dos leilões judiciais — v1.1 (07/10/2026)
+
+v1.1: a 1ª execução real (07/10) travou: o Datajud não respondia a partir do GitHub (EUA) e o robô esperava cada
+processo até o limite, estourando a hora da rotina. Agora: (1) espera no máximo 20 s por consulta; (2) depois de 3
+falhas seguidas no acesso direto, passa a consultar PELA FUNÇÃO DE SÃO PAULO (swift-api v1.3, rota ?datajud=1,
+protegida pelo DJEN_TOKEN — a mesma do DJEN); (3) teto de 20 minutos por execução (o que faltar fica para o dia
+seguinte); (4) sem acesso nem pela função: avisa e termina sem travar.
 
 Todo dia, depois dos coletores, consulta na API PÚBLICA e GRATUITA do Datajud (CNJ) os processos dos
 leilões judiciais ATIVOS no Radar e grava as últimas movimentações em public.leiloes_processos (SQL 105).
@@ -24,11 +30,14 @@ import unicodedata
 
 import requests
 
-VERSAO = "1.0"
+VERSAO = "1.1"
 UA = "SOLIDUNS-coletor/1.0 (+https://soliduns.com.br; contato@soliduns.com.br)"
 DATAJUD = os.environ.get("DATAJUD_URL_TESTE") or "https://api-publica.datajud.cnj.jus.br/api_publica_{trib}/_search"  # a variável só existe nos testes
 PAUSA = float(os.environ.get("DATAJUD_PAUSA_TESTE") or 0.7)                      # segundos entre consultas (gentil com o serviço público)
 MAX_PROCESSOS = 1500             # teto de segurança por execução
+TEMPO_MAX = float(os.environ.get("DATAJUD_TEMPO_MAX") or 20 * 60)   # segundos por execução
+ESPERA = float(os.environ.get("DATAJUD_ESPERA_TESTE") or 20)   # segundos máximos por consulta
+RELAY = os.environ.get("DJEN_RELAY_URL") or "https://evcsniicnrlrtzpdmeza.supabase.co/functions/v1/swift-api"
 JANELA_ANTES_DO_EDITAL = 10      # dias: movimentação até 10 dias antes da publicação ainda conta
 
 # Ordem = gravidade (o primeiro achado vira o alerta principal)
@@ -152,49 +161,103 @@ def main():
     print(f"  processos de leilões judiciais ativos: {len(procs)} | a consultar hoje: {len(fila)}")
     ses = requests.Session()
     ses.headers.update({"Authorization": "APIKey " + chave, "Content-Type": "application/json", "User-Agent": UA})
+    token = (os.environ.get("DJEN_TOKEN") or "").strip()
+    modo, falhas_seguidas, t0 = "direto", 0, time.time()
+
+    def consultar(d, trib):
+        """Devolve (status_http, json_ou_None). Lança exceção em falha de rede/tempo."""
+        if modo == "direto":
+            r = ses.post(DATAJUD.format(trib=trib.lower()), data=json.dumps({"query": {"match": {"numeroProcesso": d}}, "size": 10}),
+                         timeout=ESPERA)
+        else:
+            r = requests.get(RELAY, params={"forceFunctionRegion": "sa-east-1", "datajud": "1", "tribunal": trib, "processo": d},
+                             headers={"x-soliduns-token": token, "x-datajud-key": chave, "User-Agent": UA}, timeout=ESPERA + 15)
+            if r.status_code == 401 and "nao_autorizado" in r.text:
+                raise PermissionError("a função de São Paulo recusou o DJEN_TOKEN")
+            if r.status_code in (502, 504):
+                raise TimeoutError("o Datajud não respondeu nem pela função de São Paulo")
+        return r.status_code, (r.json() if r.status_code == 200 else None)
+
     cont = {"consultados": 0, "encontrados": 0, "nao_encontrados": 0, "erros": 0}
-    por_alerta, linhas = {}, []
-    for i, (d, trib, ref) in enumerate(fila):
+    por_alerta, linhas, parar, refazer = {}, [], False, []
+    for i, (d, trib, ref) in enumerate(fila):          # (a lista pode crescer: os que falharam antes da troca de rota)
+        if time.time() - t0 > TEMPO_MAX:
+            print(f"  tempo máximo de {TEMPO_MAX / 60:.0f} min atingido — {len(fila) - i} processo(s) ficam para a próxima execução")
+            break
         desde = (dt.date.fromisoformat(ref) - dt.timedelta(days=JANELA_ANTES_DO_EDITAL)).isoformat()
         reg = {"processo": d, "tribunal": trib, "consultado_em": agora.isoformat(), "encontrado": False, "classe": None,
                "orgao": None, "ultimo_mov_data": None, "ultimo_mov_nome": None, "alertas": [], "alerta_principal": None,
                "alerta_mov": None, "alerta_data": None, "movimentos": [], "erro": None}   # todas as chaves: o envio em lote exige
-        try:
-            r = ses.post(DATAJUD.format(trib=trib.lower()), data=json.dumps({"query": {"match": {"numeroProcesso": d}}, "size": 10}), timeout=40)
-            if r.status_code in (401, 403):
-                print(f"  ERRO: o Datajud recusou a chave ou o acesso (HTTP {r.status_code}). Confira a chave pública vigente "
-                      "na wiki do CNJ e atualize o segredo DATAJUD_API_KEY. Interrompido.")
+        for tentativa in range(2):
+            try:
+                status, dados = consultar(d, trib)
+                if status in (401, 403):
+                    if modo == "direto" and status == 403 and token:
+                        raise ConnectionError("acesso direto recusado (403)")
+                    print(f"  ERRO: o Datajud recusou a chave (HTTP {status}). Confira a chave pública vigente na wiki do CNJ "
+                          "e atualize o segredo DATAJUD_API_KEY. Interrompido.")
+                    cont["erros"] += 1
+                    parar = True
+                elif status == 404:
+                    reg.update(encontrado=False, erro="tribunal sem índice no Datajud")
+                    cont["nao_encontrados"] += 1
+                elif status != 200:
+                    raise ConnectionError(f"HTTP {status}")
+                else:
+                    falhas_seguidas = 0
+                    res = ler_resposta(dados)
+                    cont["consultados"] += 1
+                    if not res:
+                        cont["nao_encontrados"] += 1
+                    else:
+                        cont["encontrados"] += 1
+                        tipos, p, pm, pd = classificar(res["movimentos"], desde)
+                        ult = res["movimentos"][0] if res["movimentos"] else {}
+                        reg.update(encontrado=True, classe=res["classe"], orgao=res["orgao"],
+                                   ultimo_mov_data=ult.get("dataHora"), ultimo_mov_nome=ult.get("nome"),
+                                   alertas=tipos, alerta_principal=p, alerta_mov=pm, alerta_data=pd,
+                                   movimentos=[{"data": (m.get("dataHora") or "")[:10], "nome": m.get("nome")} for m in res["movimentos"][:15]])
+                        if p:
+                            por_alerta[p] = por_alerta.get(p, 0) + 1
+                break
+            except PermissionError as e:
+                print(f"  ERRO: {e}. Confira o segredo DJEN_TOKEN (o mesmo da etapa dos judiciais). Interrompido.")
+                cont["erros"] += 1
+                parar = True
+                break
+            except Exception as e:                               # noqa: BLE001 — rede/tempo: conta e decide
+                falhas_seguidas += 1
+                reg.update(erro=str(e)[:200])
+                if modo == "direto" and falhas_seguidas >= 3:
+                    if token:
+                        modo, falhas_seguidas = "relay", 0
+                        print("  o Datajud não respondeu ao acesso direto (3 falhas seguidas) — passando a consultar pela função de São Paulo")
+                        fila.extend(refazer)                     # os que falharam antes voltam para o fim da fila
+                        refazer = []
+                        reg["erro"] = None
+                        continue                                 # repete este processo pela função
+                    print("  ERRO: o Datajud não responde a partir do GitHub e não há DJEN_TOKEN para usar a função de São Paulo. Interrompido.")
+                    parar = True
+                elif modo == "direto":
+                    refazer.append((d, trib, ref))
+                    reg["_refazer"] = True
+                elif modo == "relay" and falhas_seguidas >= 5:
+                    print("  ERRO: o Datajud não respondeu nem pela função de São Paulo (5 falhas seguidas). Interrompido; tenta de novo amanhã.")
+                    parar = True
                 cont["erros"] += 1
                 break
-            if r.status_code == 404:
-                reg.update(encontrado=False, erro="tribunal sem índice no Datajud")
-                cont["nao_encontrados"] += 1
-            else:
-                r.raise_for_status()
-                res = ler_resposta(r.json())
-                cont["consultados"] += 1
-                if not res:
-                    reg.update(encontrado=False)
-                    cont["nao_encontrados"] += 1
-                else:
-                    cont["encontrados"] += 1
-                    tipos, p, pm, pd = classificar(res["movimentos"], desde)
-                    ult = res["movimentos"][0] if res["movimentos"] else {}
-                    reg.update(encontrado=True, classe=res["classe"], orgao=res["orgao"],
-                               ultimo_mov_data=ult.get("dataHora"), ultimo_mov_nome=ult.get("nome"),
-                               alertas=tipos, alerta_principal=p, alerta_mov=pm, alerta_data=pd,
-                               movimentos=[{"data": (m.get("dataHora") or "")[:10], "nome": m.get("nome")} for m in res["movimentos"][:15]])
-                    if p:
-                        por_alerta[p] = por_alerta.get(p, 0) + 1
-        except Exception as e:                                   # noqa: BLE001 — registra e segue
-            cont["erros"] += 1
-            reg.update(erro=str(e)[:200])
+        if parar:
+            break
+        if reg.pop("_refazer", False):
+            time.sleep(PAUSA)
+            continue                                             # não grava: será refeito pela função de São Paulo
         linhas.append(reg)
-        if len(linhas) >= 50 or i == len(fila) - 1:
+        if len(linhas) >= 50:
             sb("POST", "leiloes_processos?on_conflict=processo", data=json.dumps(linhas),
                headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
             linhas = []
         time.sleep(PAUSA)
+    print(f"  modo de acesso: {'direto (GitHub)' if modo == 'direto' else 'pela função de São Paulo'}")
     if linhas:
         sb("POST", "leiloes_processos?on_conflict=processo", data=json.dumps(linhas),
            headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
