@@ -23,7 +23,7 @@ import subprocess
 import tempfile
 import unicodedata
 
-VERSAO = "1.0"
+VERSAO = "1.1"
 
 
 # ------------------------------------------------------------ texto do PDF
@@ -78,7 +78,10 @@ def normalizar(texto):
 
 # cabeçalho de ato: "R-5/12.345", "R.5-12345", "AV-3/M-12.345", "AV.03 - 12345", "R 4/ 9.876"
 RE_ATO = re.compile(r"(?<![a-z0-9])(r|av)\s*[\.\-]?\s*(\d{1,3})\s*[\/\-–—]\s*(?:m\s*[\.\-]?\s*)?\d[\d\.]{1,9}(?!\d)")
-
+# cabeçalho no COMEÇO DA LINHA, em qualquer formato: "R.1 - Prot.", "AV-01:", "R 3 Em 10/01/2020",
+# "REGISTRO Nº 4 -", "AVERBAÇÃO 5 -", "Av.6/M-12.345". Citações no meio do texto não contam.
+RE_ATO_LINHA = re.compile(r"(?m)^[ \t\-–—•*]*(r|av|reg(?:istro)?|averb(?:acao)?)\s*(?:n\s*[oº°\.]+\s*)?[\.\-]?\s*0*(\d{1,3})(?!\d)"
+                          r"(?=\s*(?:[\/\-–—:\.\)(,]|em\b|de\b|prot|data|matr|m\b|$))")
 TIPOS = [  # (tipo, rótulo, é ônus?, padrão)
     ("cancelamento", "cancelamento", False, r"cancelad|cancelament|fica\s+sem\s+efeito|baixa\s+d[ao]"),
     ("consolidacao", "consolidação da propriedade", False, r"consolida\w*(?:-se)?\s+(?:d[eao]\s+|a\s+)?(?:propriedade|dominio)"),
@@ -112,13 +115,24 @@ def tipo_do_ato(trecho):
     return melhor[1] if melhor else ("outro", "outro", False)
 
 
+def _cod(letra, num):
+    return ("R" if letra.startswith("r") else "AV") + "-" + str(int(num))
+
+
+def _marcas(t):
+    """Usa os cabeçalhos no começo da linha; se achar poucos (texto sem quebras), usa o formato com nº da matrícula."""
+    linha = list(RE_ATO_LINHA.finditer(t))
+    meio = list(RE_ATO.finditer(t))
+    return linha if len({_cod(m.group(1), m.group(2)) for m in linha}) >= max(2, len({_cod(m.group(1), m.group(2)) for m in meio}) // 2) else meio
+
+
 def analisar(texto):
     t = normalizar(texto)
-    marcas = list(RE_ATO.finditer(t))
+    marcas = _marcas(t)
     atos = []
     vistos = set()
     for i, m in enumerate(marcas):
-        cod = ("R" if m.group(1) == "r" else "AV") + "-" + str(int(m.group(2)))
+        cod = _cod(m.group(1), m.group(2))
         fim = marcas[i + 1].start() if i + 1 < len(marcas) else len(t)
         trecho = t[m.end():fim][:1500]
         if cod in vistos:          # a mesma marca citada de novo dentro do texto de outro ato
@@ -127,8 +141,16 @@ def analisar(texto):
         tipo, rotulo, onus = tipo_do_ato(trecho[:400])
         cita = set()
         if tipo == "cancelamento":
-            for c in re.finditer(r"(?<![a-z0-9])(r|av)\s*[\.\-]?\s*(\d{1,3})(?!\d)", trecho[:600]):
-                cita.add(("R" if c.group(1) == "r" else "AV") + "-" + str(int(c.group(2))))
+            for c in re.finditer(r"(?<![a-z0-9])(r|av|registro|averbacao)\s*(?:n\s*[oº°\.]+\s*)?[\.\-]?\s*0*(\d{1,3})(?!\d)", trecho[:600]):
+                cita.add(_cod(c.group(1), c.group(2)))
+            cita.discard(cod)
+            if not cita:   # "cancelamento da hipoteca" sem citar o nº: cancela o último ônus desse tipo ainda ativo
+                for tp, rot, eh, pad in TIPOS:
+                    if eh and re.search(pad, trecho[:300]):
+                        ant = [a for a in atos if a["tipo"] == tp and a["ato"] not in {x for b in atos for x in b["cancela"]}]
+                        if ant:
+                            cita.add(ant[-1]["ato"])
+                        break
         atos.append({"ato": cod, "tipo": tipo, "rotulo": rotulo, "onus": onus, "cancela": sorted(cita),
                      "trecho": trecho[:220].strip()})
 
@@ -159,6 +181,30 @@ def analisar(texto):
     return {"versao": VERSAO, "atos": len(atos), "lista_atos": atos, "onus": onus,
             "consolidacao": consolidou, "termos": soltos, "resumo": resumo,
             "qualidade": qualidade_texto(t)}
+
+
+PALAVRAS_OK = set("""r av reg registro averbacao matricula m mat prot protocolo protocolado em de do da dos das e a o
+no na nos nas n nº data titulo compra venda alienacao fiduciaria hipoteca penhora cancelamento cancelada
+consolidacao propriedade dominio construcao habite-se incorporacao condominio convencao instituicao retificacao
+indisponibilidade arresto usufruto doacao inscricao municipal imovel livro ficha folha fls cartorio oficio
+registro geral cnm codigo nacional emolumentos selo valor transmitente adquirente devedor credor caixa economica
+federal banco escritura instrumento particular contrato lei art termos conforme objeto presente averba-se registra-se
+fica procede se ato atos onus averba registra habite""".split())
+
+
+def formato_mascarado(texto, n=20):
+    """Linhas que parecem cabeçalho de ato, com nomes e números escondidos (para o registro público do teste)."""
+    saida = []
+    for linha in normalizar(texto).splitlines():
+        l = linha.strip()
+        if not re.match(r"[\-–—•*]*\s*(r|av|reg|averb)\w*\s*[\.\-]?\s*(n\s*[oº°\.]+\s*)?\d", l):
+            continue
+        l = re.sub(r"\d", "#", l[:70])
+        l = re.sub(r"[a-z]+", lambda m: m.group(0) if m.group(0) in PALAVRAS_OK else "x", l)
+        saida.append(l)
+        if len(saida) >= n:
+            break
+    return saida
 
 
 def qualidade_texto(t):

@@ -11,7 +11,10 @@ E mede a máquina do GitHub (para o passo opcional de IA aberta no futuro).
 
 NÃO grava nada no banco, NÃO usa chave/segredo, NÃO guarda os PDFs.
 PRIVACIDADE (repositório público = registro público): o relatório mostra só
-números (páginas, letras, atos) e os TIPOS de ato — nunca nomes, CPF ou trechos.
+números (páginas, letras, atos), os TIPOS de ato e o FORMATO dos cabeçalhos dos
+atos com toda palavra fora de uma lista de termos jurídicos trocada por "x" e
+todo número por "#" — nunca nomes, CPF ou trechos.
+v1.2: 2 imóveis em cada uma das 14 UFs (cartórios diferentes) e formato mascarado.
 Regras do projeto: identifica-se como robô, respeita o robots.txt, sem captcha,
 sem login, poucas consultas, com pausa.
 
@@ -34,7 +37,7 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ler_matricula  # noqa: E402
 
-VERSAO = "1.0"
+VERSAO = "1.2"
 UA = "SOLIDUNS-coletor/1.0 (+https://soliduns.com.br; contato@soliduns.com.br)"
 BASE = os.environ.get("CAIXA_BASE_TESTE") or "https://venda-imoveis.caixa.gov.br"
 PROTECAO = ("server", "via", "cf-ray", "x-iinfo", "x-cdn", "x-akamai-transformed", "x-sucuri-id", "set-cookie",
@@ -142,6 +145,10 @@ def testar_imovel(uf, numero, link):
             log(f"      ônus: " + (", ".join(f"{o['ato']} {o['tipo']} ({o['situacao']})" for o in res["onus"]) or "nenhum"))
             log(f"      consolidação da propriedade: {'sim' if res['consolidacao'] else 'não achada'}")
             log(f"      RESUMO: {res['resumo'][:200]}")
+            forma = ler_matricula.formato_mascarado(texto, 12)
+            log(f"      formato dos cabeçalhos (nomes e números escondidos): {len(forma)} linha(s)")
+            for l in forma:
+                log(f"        | {l}")
             return True
         except Exception as e:
             log(f"      erro ao ler o PDF: {type(e).__name__}: {str(e)[:150]}")
@@ -165,8 +172,8 @@ def maquina():
 def main():
     global rp
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ufs", default="DF,SP,GO")
-    ap.add_argument("--por-uf", type=int, default=3)
+    ap.add_argument("--ufs", default="DF,GO,SP,MG,RJ,PR,SC,RS,BA,PE,CE,RN,PB,ES")
+    ap.add_argument("--por-uf", type=int, default=2)
     a = ap.parse_args()
 
     log(f"SOLIDUNS — teste de matrículas da Caixa v{VERSAO} (leitor v{ler_matricula.VERSAO})")
