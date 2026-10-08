@@ -1,0 +1,27 @@
+# SOLIDUNS — Agente de leilões — TESTE DE MATRÍCULAS DA CAIXA (v1.0, 07/10/2026)
+# Roda SÓ quando você clica em "Run workflow". Não tem horário, não grava no banco,
+# não usa nenhum segredo e não guarda os PDFs.
+name: Leilões - teste de matrículas
+
+on:
+  workflow_dispatch:
+
+jobs:
+  teste:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar leitor de imagem (Tesseract, gratuito)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-por poppler-utils
+
+      - name: Instalar dependências
+        run: pip install requests pypdf
+
+      - name: Testar matrículas da Caixa
+        run: python coletor/testar_matriculas_leiloes.py
