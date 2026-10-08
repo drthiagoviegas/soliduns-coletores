@@ -37,7 +37,7 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ler_matricula  # noqa: E402
 
-VERSAO = "1.2"
+VERSAO = "1.3"
 UA = "SOLIDUNS-coletor/1.0 (+https://soliduns.com.br; contato@soliduns.com.br)"
 BASE = os.environ.get("CAIXA_BASE_TESTE") or "https://venda-imoveis.caixa.gov.br"
 PROTECAO = ("server", "via", "cf-ray", "x-iinfo", "x-cdn", "x-akamai-transformed", "x-sucuri-id", "set-cookie",

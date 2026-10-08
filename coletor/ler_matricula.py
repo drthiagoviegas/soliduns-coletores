@@ -23,7 +23,7 @@ import subprocess
 import tempfile
 import unicodedata
 
-VERSAO = "1.1"
+VERSAO = "1.2"
 
 
 # ------------------------------------------------------------ texto do PDF
@@ -42,11 +42,17 @@ def texto_do_pdf(caminho, max_paginas=12, dpi=250):
         texto = "\n".join(partes)
     except Exception:
         paginas, texto = 0, ""
-    # PDF com texto de verdade: pelo menos ~200 letras por página lida
+    # PDF com texto de verdade: pelo menos ~200 letras por página lida E os atos aparecem no texto.
+    # Muitas matrículas da Caixa são imagem escaneada com só um carimbo/rodapé em texto: aí lê por imagem
+    # e fica com a leitura que separar mais atos.
     letras = len(re.findall(r"[A-Za-zÀ-ú]", texto))
-    if paginas and letras >= 200 * min(paginas, max_paginas):
+    lidas = min(paginas, max_paginas) if paginas else 0
+    if lidas and letras >= 200 * lidas and (letras >= 1200 * lidas or len(_marcas(normalizar(texto))) >= 2):
         return texto, "texto", paginas
-    return ocr_pdf(caminho, max_paginas, dpi), "ocr", paginas
+    ocr = ocr_pdf(caminho, max_paginas, dpi)
+    if len(_marcas(normalizar(ocr))) >= len(_marcas(normalizar(texto))):
+        return ocr, "ocr", paginas
+    return texto, "texto", paginas
 
 
 def ocr_pdf(caminho, max_paginas=12, dpi=250):
