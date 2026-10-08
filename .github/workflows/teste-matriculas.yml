@@ -1,4 +1,4 @@
-# SOLIDUNS — Agente de leilões — TESTE DE MATRÍCULAS DA CAIXA (v1.0, 07/10/2026)
+# SOLIDUNS — Agente de leilões — TESTE DE MATRÍCULAS DA CAIXA (v1.1, 07/10/2026)
 # Roda SÓ quando você clica em "Run workflow". Não tem horário, não grava no banco,
 # não usa nenhum segredo e não guarda os PDFs.
 name: Leilões - teste de matrículas
@@ -9,7 +9,7 @@ on:
 jobs:
   teste:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 

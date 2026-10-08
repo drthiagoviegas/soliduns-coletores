@@ -1,0 +1,35 @@
+# SOLIDUNS — LEILÃO DE AUTOMÓVEIS — reconhecimento das fontes (v1.0, 08/10/2026)
+# Só à mão (Run workflow). Não grava no banco e não usa chave nenhuma.
+# Abre os sites da Receita, Detrans, PRF e leiloeiros (respeitando o robots.txt) e guarda amostras
+# das páginas no artefato "amostras-fontes-veiculos" (baixe no fim da página da execução).
+name: Veículos - teste das fontes
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fontes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install requests
+
+      - name: Reconhecer as fontes
+        env:
+          AMOSTRAS: amostras
+        run: python coletor/testar_fontes_veiculos.py
+
+      - name: Guardar amostras
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: amostras-fontes-veiculos
+          path: amostras
+          retention-days: 14

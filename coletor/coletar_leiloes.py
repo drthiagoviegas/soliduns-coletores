@@ -1,5 +1,13 @@
 """
-SOLIDUNS — AGENTE DE LEILÕES — Coletor do RADAR — v1.3 (07/10/2026)
+SOLIDUNS — AGENTE DE LEILÕES — Coletor do RADAR — v1.4 (08/10/2026)
+
+v1.4: (1) ACENTOS — a lista da Caixa vem sem acento ("SAO NICOLAU"); cidade, bairro e
+endereço passam por um dicionário de nomes comuns ("SÃO NICOLAU", "SÃO JOÃO DE MERITI").
+Só troca palavras inteiras conhecidas, sem ambiguidade; o resto fica como a Caixa escreveu.
+(2) CONFERÊNCIA DE PREÇO — para cada UF, o registro lista os imóveis com desconto acima de
+80% e os que têm desconto calculado (preço x avaliação) diferente do informado pela Caixa
+(mais de 2 pontos). Os números são gravados como a Caixa publica; o site marca esses
+imóveis com "⚠ VERIFICAR".
 
 v1.3: mais 6 estados (pedido do Thiago, 07/10) — RJ, PR, SC, RS, ES e PE (total: 14 UFs).
 
@@ -56,7 +64,7 @@ from urllib import robotparser
 
 import requests
 
-VERSAO = "1.3"
+VERSAO = "1.4"
 UA = "SOLIDUNS-coletor/1.0 (+https://soliduns.com.br; contato@soliduns.com.br)"
 CAIXA_BASE = "https://venda-imoveis.caixa.gov.br"
 CAIXA_URL = CAIXA_BASE + "/listaweb/Lista_imoveis_{uf}.csv"
@@ -74,6 +82,26 @@ def log(*a):
 
 def sem_acento(t):
     return "".join(c for c in unicodedata.normalize("NFD", t or "") if unicodedata.category(c) != "Mn").lower().strip()
+
+
+# ------------------------------------------------------------ acentos
+ACENTOS = {"acacias": "acácias", "acucar": "açúcar", "agua": "água", "aguas": "águas", "aguia": "águia", "alcantara": "alcântara", "amapa": "amapá", "amelia": "amélia", "america": "américa", "anapolis": "anápolis", "andarai": "andaraí", "andre": "andré", "antonio": "antônio", "aracatuba": "araçatuba", "araucaria": "araucária", "area": "área", "ascensao": "ascensão", "assuncao": "assunção", "atlantico": "atlântico", "aviacao": "aviação", "balneario": "balneário", "barbara": "bárbara", "belem": "belém", "brasilia": "brasília", "buzios": "búzios", "camacari": "camaçari", "camboriu": "camboriú", "candido": "cândido", "cassio": "cássio", "catalao": "catalão", "ceara": "ceará", "cecilia": "cecília", "ceilandia": "ceilândia", "celia": "célia", "cemiterio": "cemitério", "chacara": "chácara", "chacaras": "chácaras", "chapeco": "chapecó", "claudia": "cláudia", "colonia": "colônia", "conceicao": "conceição", "criciuma": "criciúma", "cristovao": "cristóvão", "eden": "éden", "edificio": "edifício", "emilia": "emília", "esperanca": "esperança", "espirito": "espírito", "estacao": "estação", "estevao": "estêvão", "eugenio": "eugênio", "fabio": "fábio", "fatima": "fátima", "ferroviario": "ferroviário", "flavia": "flávia", "florianopolis": "florianópolis", "fundao": "fundão", "gavea": "gávea", "gloria": "glória", "goiania": "goiânia", "goias": "goiás", "goncalo": "gonçalo", "grajau": "grajaú", "gravatai": "gravataí", "guara": "guará", "guaruja": "guarujá", "helia": "hélia", "horacio": "horácio", "hortensias": "hortênsias", "hortolandia": "hortolândia", "icarai": "icaraí", "iguacu": "iguaçu", "ilheus": "ilhéus", "inacio": "inácio", "independencia": "independência", "ines": "inês", "inhauma": "inhaúma", "ipe": "ipê", "ipes": "ipês", "iraja": "irajá", "irmaos": "irmãos", "itaborai": "itaboraí", "itaguai": "itaguaí", "itajai": "itajaí", "italia": "itália", "itapoa": "itapoã", "itapua": "itapuã", "jaboatao": "jaboatão", "jacarei": "jacareí", "jacarepagua": "jacarepaguá", "jaragua": "jaraguá", "jatai": "jataí", "jeronimo": "jerônimo", "joao": "joão", "jose": "josé", "julia": "júlia", "julio": "júlio", "jundiai": "jundiaí", "lazaro": "lázaro", "lourenco": "lourenço", "lucia": "lúcia", "luis": "luís", "luziania": "luziânia", "macae": "macaé", "maceio": "maceió", "maraba": "marabá", "maracana": "maracanã", "maracanau": "maracanaú", "maranhao": "maranhão", "marcio": "márcio", "marica": "maricá", "marilia": "marília", "maringa": "maringá", "maua": "mauá", "mauricio": "maurício", "meier": "méier", "mexico": "méxico", "monica": "mônica", "mossoro": "mossoró", "nazare": "nazaré", "nilopolis": "nilópolis", "niteroi": "niterói", "nucleo": "núcleo", "oasis": "oásis", "operario": "operário", "orquideas": "orquídeas", "otavio": "otávio", "pacifico": "pacífico", "pao": "pão", "paraiba": "paraíba", "paraiso": "paraíso", "paranoa": "paranoá", "patricia": "patrícia", "petropolis": "petrópolis", "piaui": "piauí", "pirai": "piraí", "placido": "plácido", "platano": "plátano", "plinio": "plínio", "predio": "prédio", "republica": "república", "ribeirao": "ribeirão", "rodoviaria": "rodoviária", "rogerio": "rogério", "rosario": "rosário", "sao": "são", "saude": "saúde", "sebastiao": "sebastião", "seminario": "seminário", "sergio": "sérgio", "sertao": "sertão", "sertaozinho": "sertãozinho", "silvia": "sílvia", "simoes": "simões", "sitio": "sítio", "sitios": "sítios", "sumare": "sumaré", "taboao": "taboão", "taubate": "taubaté", "teresopolis": "teresópolis", "tome": "tomé", "tres": "três", "uberlandia": "uberlândia", "uniao": "união", "universitaria": "universitária", "universitario": "universitário", "valeria": "valéria", "valparaiso": "valparaíso", "veronica": "verônica", "viamao": "viamão", "vinicius": "vinícius", "virginia": "virgínia", "vitoria": "vitória"}
+
+
+def com_acentos(texto):
+    """'PARQUE SAO NICOLAU' -> 'PARQUE SÃO NICOLAU' (só palavras do dicionário; mantém maiúsculas)."""
+    if not texto:
+        return texto
+
+    def troca(m):
+        w = m.group(0)
+        a = ACENTOS.get(w.lower())
+        if not a:
+            return w
+        if w.isupper():
+            return a.upper()
+        return a[0].upper() + a[1:] if w[0].isupper() else a
+    return re.sub(r"[A-Za-zÀ-ÿ]+", troca, texto)
 
 
 # ------------------------------------------------------------ leitura da lista
@@ -185,9 +213,9 @@ def ler_lista(conteudo_bytes, uf_esperada):
             "fonte": FONTE,
             "numero": num,
             "uf": uf,
-            "cidade": bruto.get("cidade") or None,
-            "bairro": bruto.get("bairro") or None,
-            "endereco": bruto.get("endereco") or None,
+            "cidade": com_acentos(bruto.get("cidade")) or None,
+            "bairro": com_acentos(bruto.get("bairro")) or None,
+            "endereco": com_acentos(bruto.get("endereco")) or None,
             "tipo": tipo_site(info["tipo_original"]),
             "preco": preco,
             "avaliacao": numero(bruto.get("avaliacao")),
@@ -204,9 +232,35 @@ def ler_lista(conteudo_bytes, uf_esperada):
         log(f"  aviso: {outras} linha(s) de outra UF na lista de {uf_esperada}")
     if descartados:
         log(f"  aviso: {descartados} linha(s) sem nº, UF ou preço foram ignoradas")
+    conferir_precos(imoveis)
     # mesmo nº repetido: fica o último
     unicos = {x["id"]: x for x in imoveis}
     return data_lista, list(unicos.values())
+
+
+def conferir_precos(imoveis):
+    """Desconto acima de 80% ou diferente do informado pela Caixa: lista no registro para conferência."""
+    altos, divergentes = [], []
+    for x in imoveis:
+        p, a, d = x.get("preco"), x.get("avaliacao"), x.get("desconto")
+        if not p or not a or a <= 0:
+            continue
+        calc = round(100 * (1 - p / a), 2)
+        if calc > 80:
+            altos.append((x, calc))
+        if d is not None and abs(calc - d) > 2:
+            divergentes.append((x, calc))
+    def linha(x, calc):
+        return (f"    nº {x['numero']} {x.get('cidade') or ''}/{x['uf']} {x.get('bairro') or ''}: preço {x['preco']:,.2f} / "
+                f"avaliação {x['avaliacao']:,.2f} = {calc:.1f}% (a Caixa informa {x.get('desconto')}%)").replace(",", "X").replace(".", ",").replace("X", ".")
+    if altos:
+        log(f"  conferir: {len(altos)} imóvel(is) com desconto acima de 80% (mostra até 10):")
+        for x, c in sorted(altos, key=lambda z: -z[1])[:10]:
+            log(linha(x, c))
+    if divergentes:
+        log(f"  conferir: {len(divergentes)} imóvel(is) com desconto diferente do informado pela Caixa (mostra até 10):")
+        for x, c in divergentes[:10]:
+            log(linha(x, c))
 
 
 # ------------------------------------------------------------ download

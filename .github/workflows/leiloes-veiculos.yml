@@ -1,0 +1,58 @@
+# SOLIDUNS — LEILÃO DE AUTOMÓVEIS (v1.0, 08/10/2026)
+# Todo dia às 9h30 (Brasília). Custo zero (sem IA paga).
+#   1. Tabela FIPE: marcas e modelos oficiais (só quando faltam ou têm mais de 30 dias)
+#   2. Lotes de veículos dos editais de leilão do Diário de Justiça (DJEN), lidos por regras
+#   3. Tabela FIPE: preço de referência dos lotes novos (teto diário de consultas)
+# Grava em veiculos_* (SQL 110). Repositório PÚBLICO: só ${{ secrets.* }}, nenhuma chave aqui.
+name: Leilões - veículos
+
+on:
+  schedule:
+    - cron: "30 12 * * *"
+  workflow_dispatch:
+    inputs:
+      dias:
+        description: "Dias do Diário de Justiça a ler (na 1ª vez use 30)"
+        required: false
+        default: "3"
+
+concurrency:
+  group: leiloes-veiculos
+  cancel-in-progress: false
+
+jobs:
+  veiculos:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install requests
+
+      - name: 1. Tabela FIPE (marcas e modelos)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FIPE_TOKEN: ${{ secrets.FIPE_TOKEN }}
+        run: python coletor/coletar_fipe.py catalogo
+
+      - name: 2. Lotes de veículos (Diário de Justiça)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DJEN_TOKEN: ${{ secrets.DJEN_TOKEN }}
+          VEICULOS_DIAS: ${{ github.event.inputs.dias || '3' }}
+        run: python coletor/coletar_leiloes_veiculos.py
+
+      - name: 3. Tabela FIPE (preços dos lotes)
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FIPE_TOKEN: ${{ secrets.FIPE_TOKEN }}
+        run: python coletor/coletar_fipe.py precos

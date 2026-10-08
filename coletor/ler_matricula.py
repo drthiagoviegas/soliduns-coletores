@@ -17,13 +17,15 @@ usa o Tesseract (gratuito) em português, página por página.
 Dependências: pypdf; programas tesseract (com idioma "por") e pdftoppm.
 """
 
+import logging
 import os
 import re
 import subprocess
 import tempfile
 import unicodedata
 
-VERSAO = "1.2"
+VERSAO = "1.3"
+logging.getLogger("pypdf").setLevel(logging.ERROR)   # avisos de fonte do pypdf não interessam
 
 
 # ------------------------------------------------------------ texto do PDF
@@ -83,11 +85,11 @@ def normalizar(texto):
 
 
 # cabeçalho de ato: "R-5/12.345", "R.5-12345", "AV-3/M-12.345", "AV.03 - 12345", "R 4/ 9.876"
-RE_ATO = re.compile(r"(?<![a-z0-9])(r|av)\s*[\.\-]?\s*(\d{1,3})\s*[\/\-–—]\s*(?:m\s*[\.\-]?\s*)?\d[\d\.]{1,9}(?!\d)")
+RE_ATO = re.compile(r"(?<![a-z0-9])(r|av)\s*[\.\-]?\s*(\d{1,3})\s*[\/\-–—=]\s*(?:m\s*[\.\-]?\s*)?\d[\d\.]{1,9}(?!\d)")
 # cabeçalho no COMEÇO DA LINHA, em qualquer formato: "R.1 - Prot.", "AV-01:", "R 3 Em 10/01/2020",
 # "REGISTRO Nº 4 -", "AVERBAÇÃO 5 -", "Av.6/M-12.345". Citações no meio do texto não contam.
 RE_ATO_LINHA = re.compile(r"(?m)^[ \t\-–—•*]*(r|av|reg(?:istro)?|averb(?:acao)?)\s*(?:n\s*[oº°\.]+\s*)?[\.\-]?\s*0*(\d{1,3})(?!\d)"
-                          r"(?=\s*(?:[\/\-–—:\.\)(,]|em\b|de\b|prot|data|matr|m\b|$))")
+                          r"(?=\s*(?:[\/\-–—=:\.\)(,]|em\b|de\b|prot|data|matr|m\b|$))")
 TIPOS = [  # (tipo, rótulo, é ônus?, padrão)
     ("cancelamento", "cancelamento", False, r"cancelad|cancelament|fica\s+sem\s+efeito|baixa\s+d[ao]"),
     ("consolidacao", "consolidação da propriedade", False, r"consolida\w*(?:-se)?\s+(?:d[eao]\s+|a\s+)?(?:propriedade|dominio)"),

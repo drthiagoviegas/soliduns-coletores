@@ -1,0 +1,35 @@
+# SOLIDUNS — LEILÕES EXTRAJUDICIAIS — reconhecimento de bancos e leiloeiros (v1.0, 08/10/2026)
+# Só à mão (Run workflow). Não grava no banco e não usa chave nenhuma (repositório PÚBLICO).
+# Abre a área de imóveis do Banco do Brasil, Poupex, Santander, Itaú, Bradesco, BRB, BMG e outros, e dos leiloeiros que
+# vendem imóveis de bancos, respeitando o robots.txt, e guarda amostras no artefato "amostras-bancos-leiloeiros".
+name: Leilões - teste dos bancos
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bancos:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install requests
+
+      - name: Reconhecer bancos e leiloeiros
+        env:
+          AMOSTRAS: amostras
+        run: python coletor/testar_fontes_bancos.py
+
+      - name: Guardar amostras
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: amostras-bancos-leiloeiros
+          path: amostras
+          retention-days: 14
