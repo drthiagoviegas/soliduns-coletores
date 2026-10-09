@@ -1,5 +1,10 @@
 """
-SOLIDUNS — AGENTE DE LEILÕES — PRÉ-ANÁLISE DA MATRÍCULA — v1.0 (07/10/2026)
+SOLIDUNS — AGENTE DE LEILÕES — PRÉ-ANÁLISE DA MATRÍCULA — v1.1 (09/10/2026)
+
+v1.1: (1) lê PREANALISE_PARALELO imóveis ao mesmo tempo (padrão 3): a leitura por imagem (OCR) é o gargalo e o
+servidor do GitHub tem vários núcleos — ~3x mais matrículas por execução; (2) "HTTP 200 sem PDF" (a Caixa responde
+uma página no lugar da matrícula) NÃO conta mais como "Caixa fora do ar": a execução de 08/10 parou à toa depois de
+10 desses seguidos. Só param a execução: 10 falhas de conexão/bloqueio seguidas ou 40 "sem PDF" seguidos.
 
 ETAPA 2 da pré-análise (aprovada pelo Thiago em 07/10; CUSTO ZERO, sem IA paga).
 Rotina "Leilões - pré-análise" (leiloes-preanalise.yml), todo dia. Grava em
@@ -35,6 +40,7 @@ import re
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from urllib import robotparser
 from urllib.parse import urljoin
 
@@ -43,7 +49,7 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ler_matricula  # noqa: E402
 
-VERSAO = "1.0"
+VERSAO = "1.1"
 UA = "SOLIDUNS-coletor/1.0 (+https://soliduns.com.br; contato@soliduns.com.br)"
 CAIXA = os.environ.get("CAIXA_BASE_TESTE") or "https://venda-imoveis.caixa.gov.br"
 PAUSA = float(os.environ.get("PAUSA_CAIXA", "2"))
@@ -127,15 +133,20 @@ def candidatos(so_id=None):
 
 
 # ------------------------------------------------------------ Caixa
+_rp_trava = __import__("threading").Lock()
+
+
 def permitido(url):
     global _rp
-    if _rp is None:
-        _rp = robotparser.RobotFileParser()
-        try:
-            r = s.get(CAIXA + "/robots.txt", timeout=40)
-            _rp.parse(r.text.splitlines() if r.status_code < 400 else [])
-        except requests.RequestException:
-            _rp.parse([])
+    with _rp_trava:                       # v1.1: várias leituras ao mesmo tempo — o robots.txt é lido uma vez só
+        if _rp is None:
+            rp = robotparser.RobotFileParser()
+            try:
+                r = s.get(CAIXA + "/robots.txt", timeout=40)
+                rp.parse(r.text.splitlines() if r.status_code < 400 else [])
+            except requests.RequestException:
+                rp.parse([])
+            _rp = rp
     return _rp.can_fetch(UA, url)
 
 
@@ -268,36 +279,50 @@ def main():
     pend, total = candidatos(a.id)
     log(f"Fila da Caixa (pendente/em análise): {total} | a ler agora: {min(len(pend), LIMITE)} de {len(pend)}")
     c = {"lidos": 0, "com_onus": 0, "erros": 0, "ocr": 0, "bloqueios": 0}
-    seguidos = 0
-    for item in pend[:LIMITE]:
-        if time.time() - inicio > TEMPO_MAX:
-            log(f"Teto de tempo ({TEMPO_MAX // 60} min) — o restante fica para a próxima execução.")
-            break
+    paralelo = max(1, int(os.environ.get("PREANALISE_PARALELO", "3")))
+    seguidos = sem_pdf = 0
+    fila = list(pend[:LIMITE])
+
+    def um(item):
         try:
-            linha = preanalisar(item)
-        except Exception as e:
-            linha = None
-            log(f"  {item['id']}: erro {type(e).__name__}: {str(e)[:120]}")
-            c["erros"] += 1
-            seguidos += 1
-        if linha:
-            if linha["erro"]:
-                c["erros"] += 1
-                seguidos += 1
-                c["bloqueios"] += 1 if "proteção" in linha["erro"] else 0
-                log(f"  {item['id']}: {linha['erro']}")
-            else:
-                seguidos = 0
-                c["lidos"] += 1
-                c["ocr"] += 1 if linha["metodo"] == "ocr" else 0
-                c["com_onus"] += 1 if linha["onus_ativos"] else 0
-                log(f"  {item['id']}: {linha['paginas']} pág. ({linha['metodo']}) | {len(linha['atos'])} atos | "
-                    f"{linha['onus_ativos']} ônus ativo(s)")
-            if not a.sem_gravar:
-                sb_upsert(linha)
-        if seguidos >= 10:
-            log("10 falhas seguidas — a Caixa pode estar fora do ar ou bloqueando. Parando por hoje.")
-            break
+            return item, preanalisar(item), None
+        except Exception as e:  # noqa: BLE001
+            return item, None, e
+
+    with ThreadPoolExecutor(max_workers=paralelo) as ex:
+        for k in range(0, len(fila), paralelo):
+            if time.time() - inicio > TEMPO_MAX:
+                log(f"Teto de tempo ({TEMPO_MAX // 60} min) — o restante fica para a próxima execução.")
+                break
+            parar = False
+            for item, linha, e in ex.map(um, fila[k:k + paralelo]):
+                if e is not None:
+                    log(f"  {item['id']}: erro {type(e).__name__}: {str(e)[:120]}")
+                    c["erros"] += 1
+                    seguidos += 1
+                    continue
+                if linha["erro"]:
+                    c["erros"] += 1
+                    if "HTTP 200" in linha["erro"] or "não encontrada" in linha["erro"]:
+                        sem_pdf += 1          # a Caixa respondeu, só não há PDF para este imóvel
+                    else:
+                        seguidos += 1
+                    c["bloqueios"] += 1 if "proteção" in linha["erro"] else 0
+                    log(f"  {item['id']}: {linha['erro']}")
+                else:
+                    seguidos = sem_pdf = 0
+                    c["lidos"] += 1
+                    c["ocr"] += 1 if linha["metodo"] == "ocr" else 0
+                    c["com_onus"] += 1 if linha["onus_ativos"] else 0
+                    log(f"  {item['id']}: {linha['paginas']} pág. ({linha['metodo']}) | {len(linha['atos'])} atos | "
+                        f"{linha['onus_ativos']} ônus ativo(s)")
+                if not a.sem_gravar:
+                    sb_upsert(linha)
+                if seguidos >= 10 or sem_pdf >= 40:
+                    parar = True
+            if parar:
+                log("Muitas falhas seguidas — a Caixa pode estar fora do ar ou bloqueando. Parando por agora.")
+                break
     log(f"Resultado: {c['lidos']} matrícula(s) lida(s) ({c['ocr']} por imagem), {c['com_onus']} com ônus ativo, "
         f"{c['erros']} sem matrícula/erro, {c['bloqueios']} bloqueio(s) | {time.time() - inicio:.0f} s")
     destino = os.environ.get("GITHUB_STEP_SUMMARY")

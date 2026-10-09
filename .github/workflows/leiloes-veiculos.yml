@@ -1,4 +1,4 @@
-# SOLIDUNS — LEILÃO DE AUTOMÓVEIS (v1.0, 08/10/2026)
+# SOLIDUNS — LEILÃO DE AUTOMÓVEIS (v1.1, 09/10/2026 — endereço da função de São Paulo)
 # Todo dia às 9h30 (Brasília). Custo zero (sem IA paga).
 #   1. Tabela FIPE: marcas e modelos oficiais (só quando faltam ou têm mais de 30 dias)
 #   2. Lotes de veículos dos editais de leilão do Diário de Justiça (DJEN), lidos por regras
@@ -47,6 +47,8 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           DJEN_TOKEN: ${{ secrets.DJEN_TOKEN }}
           VEICULOS_DIAS: ${{ github.event.inputs.dias || '3' }}
+          # endereço da função em São Paulo (o Supabase deu o nome "swift-api") — o mesmo da rotina "Leilões"
+          DJEN_RELAY_URL: https://evcsniicnrlrtzpdmeza.supabase.co/functions/v1/swift-api
         run: python coletor/coletar_leiloes_veiculos.py
 
       - name: 3. Tabela FIPE (preços dos lotes)

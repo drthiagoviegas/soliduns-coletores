@@ -1,11 +1,12 @@
-# SOLIDUNS — Agente de leilões — PRÉ-ANÁLISE DAS MATRÍCULAS (v1.0, 07/10/2026)
-# Todo dia às 8h30 (Brasília), depois da coleta das 7h. Custo zero (sem IA paga).
+# SOLIDUNS — Agente de leilões — PRÉ-ANÁLISE DAS MATRÍCULAS (v1.1, 09/10/2026)
+# 3 vezes por dia (8h30, 14h30 e 20h30 de Brasília), 3 matrículas ao mesmo tempo. Custo zero (sem IA paga;
+# repositório público = minutos do GitHub gratuitos). Fila de ~18 mil imóveis: ~900/dia.
 # Lê as matrículas dos imóveis da Caixa na fila de triagem e grava em leiloes_preanalise (SQL 108).
 name: Leilões - pré-análise
 
 on:
   schedule:
-    - cron: "30 11 * * *"
+    - cron: "30 11,17,23 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -35,4 +36,5 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           PREANALISE_LIMITE: "300"
           PREANALISE_TEMPO_MAX: "2400"
+          PREANALISE_PARALELO: "3"
         run: python coletor/preanalisar_leiloes.py

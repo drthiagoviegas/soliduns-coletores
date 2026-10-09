@@ -1,5 +1,9 @@
 """
-SOLIDUNS — LEILÃO DE AUTOMÓVEIS — Coletor dos lotes — v1.0 (08/10/2026)
+SOLIDUNS — LEILÃO DE AUTOMÓVEIS — Coletor dos lotes — v1.1 (09/10/2026)
+
+v1.1: a função de São Paulo do Supabase se chama "swift-api" (não "djen-relay"): na v1.0 todas as consultas ao
+Diário de Justiça davam "não encontrada" e a rotina parava depois de ~18 min. O resumo agora é gravado também
+quando a rotina falha (com o motivo).
 
 FONTES
   djen       Diário de Justiça Eletrônico Nacional (editais de leilão judicial com veículos) — ATIVA.
@@ -33,7 +37,7 @@ import requests
 from veiculos_regras import (ESTADO_NOME, UFS27, VERSAO_REGRAS, Catalogo, Cidades, extrair_lotes,
                              parece_edital_de_veiculo, sa, texto_busca)
 
-VERSAO = "1.0"
+VERSAO = "1.1"
 TRIBUNAIS = ["TJDFT", "TJGO", "TJSP", "TJMG", "TJBA", "TJCE", "TJPB", "TJRN",
              "TRF1", "TRF3", "TRF5", "TRF6", "TRT2", "TRT3", "TRT5", "TRT7", "TRT10", "TRT13", "TRT15", "TRT18", "TRT21",
              "TJRJ", "TJPR", "TJSC", "TJRS", "TJES", "TJPE", "TRF2", "TRF4", "TRT1", "TRT4", "TRT6", "TRT9", "TRT12", "TRT17"]
@@ -110,7 +114,7 @@ def relay_url():
     if base:
         return base
     url, _ = sb()
-    return f"{url}/functions/v1/djen-relay"
+    return f"{url}/functions/v1/swift-api"          # nome que o Supabase deu à função de São Paulo
 
 
 def buscar_djen(tribunal, inicio, fim):
@@ -127,6 +131,8 @@ def buscar_djen(tribunal, inicio, fim):
                     break
                 if r.status_code == 401:
                     raise RuntimeError("djen-relay recusou o token (confira DJEN_TOKEN no GitHub e no Supabase)")
+                if r.status_code == 404:          # v1.1: endereço errado não espera 3 tentativas
+                    raise RuntimeError("função de São Paulo não encontrada (confira DJEN_RELAY_URL na rotina)")
             except requests.RequestException:
                 r = None
             time.sleep(0 if os.environ.get("LEILOES_TESTE") else 5 * (tentativa + 1))
@@ -243,12 +249,24 @@ def main():
     sb_upsert("veiculos_fontes", [{"fonte": "djen", "nome": "Diário de Justiça (DJEN)", "situacao": "ativa",
                                    "ultima_execucao": dt.datetime.now(dt.timezone.utc).isoformat(),
                                    "mensagem": f"{editais} edital(is) com veículo nos últimos {DIAS} dia(s)"}], "fonte")
-    destino = os.environ.get("GITHUB_STEP_SUMMARY")
-    if destino:
-        with open(destino, "a", encoding="utf-8") as f:
-            f.write("## Leilão de automóveis\n\n```\n" + "\n".join(relatorio) + "\n```\n")
+    gravar_resumo()
     return 0
 
 
+def gravar_resumo(extra=""):
+    destino = os.environ.get("GITHUB_STEP_SUMMARY")
+    if destino:
+        with open(destino, "a", encoding="utf-8") as f:
+            f.write("## Leilão de automóveis\n\n```\n" + "\n".join(relatorio + ([extra] if extra else [])) + "\n```\n")
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit as e:
+        if e.code not in (0, None):
+            gravar_resumo(f"PAROU: {e.code}")
+        raise
+    except Exception as e:  # noqa: BLE001
+        gravar_resumo(f"ERRO: {type(e).__name__}: {str(e)[:300]}")
+        raise
