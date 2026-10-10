@@ -17,7 +17,7 @@ import json
 import re
 import unicodedata
 
-VERSAO = "leiloeiros-v1"
+VERSAO = "leiloeiros-v2"
 
 
 def sa(t):
@@ -72,7 +72,7 @@ BANCOS = [
     ("emgea", "Emgea", r"emgea"),
     ("daycoval", "Banco Daycoval", r"daycoval"),
     ("c6", "C6 Bank", r"\bc6\b|c6 ?bank"),
-    ("bv", "Banco BV", r"banco bv\b|votorantim"),
+    ("bv", "Banco BV", r"banco bv\b|votorantim|\bbv financeira"),
     ("mercantil", "Banco Mercantil", r"mercantil do brasil"),
     ("banestes", "Banestes", r"banestes"),
     ("banco_nordeste", "Banco do Nordeste", r"banco do nordeste|\bbnb\b"),
@@ -346,3 +346,98 @@ def ocupacao(t):
     if re.search(r"\bocupad", s):
         return "ocupado"
     return None
+
+
+# ------------------------------------------------------------ VIP Leilões (v86-LEI: veículos recuperados de financiamento)
+# A página /pesquisa/recuperadofinanciamento traz o formulário #formPost já com "Procedência = Recuperado Financiamento";
+# o navegador envia esse formulário para o endereço do #placeholder (…?handler=pesquisar) e recebe 12 cartões por página.
+def vip_formulario(pagina):
+    """(endereço da lista, campos do formulário como o navegador envia) ou (None, {})"""
+    m = re.search(r'<form[^>]*id="formPost"[^>]*>(.*?)</form>', pagina, re.S | re.I)
+    alvo = re.search(r'id="placeholder"[^>]*data-ajax-url="([^"]+)"', pagina)
+    if not m or not alvo:
+        return None, {}
+    dados = {}
+    for inp in re.finditer(r"<input[^>]*>", m.group(1), re.I):
+        t = inp.group(0)
+        nome = re.search(r'name="([^"]+)"', t)
+        if not nome:
+            continue
+        tipo = (re.search(r'type="([^"]+)"', t) or [None, "text"])[1].lower()
+        if tipo in ("checkbox", "radio") and not re.search(r"\bchecked\b", t, re.I):
+            continue
+        dados[nome.group(1)] = htmlmod.unescape((re.search(r'value="([^"]*)"', t) or [None, ""])[1])
+    for sel in re.finditer(r'<select[^>]*name="([^"]+)"[^>]*>(.*?)</select>', m.group(1), re.S | re.I):
+        ops = re.findall(r"<option([^>]*)>", sel.group(2), re.I)
+        val = (re.search(r'value="([^"]*)"', ops[0]) or [None, ""])[1] if ops else ""
+        for op in ops:                                        # como o navegador: vale o último "selected"
+            if re.search(r"\bselected\b", op, re.I):
+                val = (re.search(r'value="([^"]*)"', op) or [None, ""])[1]
+        dados[sel.group(1)] = htmlmod.unescape(val)
+    return htmlmod.unescape(alvo.group(1)), dados
+
+
+def vip_lotes(pagina):
+    """(cartões, total de resultados, endereços das páginas seguintes)"""
+    tot = re.search(r'id="resultadosEncontrados"[^>]*>\s*([\d.]+)\s+resultado', pagina)
+    total = int(tot.group(1).replace(".", "")) if tot else 0
+    paginas = []
+    for u in re.findall(r'class="page-link"[^>]*data-ajax-url="([^"]+pageNumber=(\d+)[^"]*)"', pagina):
+        if int(u[1]) >= 1 and htmlmod.unescape(u[0]) not in paginas:
+            paginas.append(htmlmod.unescape(u[0]))
+    out = []
+    for c in re.split(r'<div class="card card-lel card-anuncio', pagina)[1:]:
+        link = re.search(r'href="(/evento/anuncio/[^"#?]*?-(\d+))"', c)
+        if not link:
+            continue
+        estado = (re.search(r'^[^"]*?anuncio-([A-Za-z]+)', c) or [None, ""])[1]
+        situacao = texto((re.search(r'<span class="situacao">(.*?)</span>', c, re.S) or [None, ""])[1])
+        titulo = texto((re.search(r'<div class="anc-title">\s*<h1[^>]*>(.*?)</h1>', c, re.S) or [None, ""])[1])
+        info = [texto(x) for x in re.findall(r'<div class="anc-info">(.*?)</div>', c, re.S)[:1]]
+        partes = [texto(x) for x in re.findall(r"<span>(.*?)</span>", info and re.search(r'<div class="anc-info">(.*?)</div>', c, re.S).group(1) or "", re.S)]
+        foto = re.search(r'<img[^>]*src="(https://[^"]+\.(?:jpe?g|png|webp))"[^>]*class="card-img-top', c, re.I) \
+            or re.search(r'class="card-img-top[^"]*"[^>]*src="(https://[^"]+)"', c)
+        ini = re.search(r'In[ií&#xED;]+cio:\s*(\d{2}/\d{2}/\d{4})', htmlmod.unescape(c))
+        lote = re.search(r"<strong>Lote:</strong>\s*([\w.-]+)", c)
+        uf = re.search(r"<strong>Local:</strong>\s*([A-Z]{2})\b", c)
+        out.append({"codigo": link.group(2), "link": "https://www.vipleiloes.com.br" + link.group(1), "estado": estado,
+                    "situacao": situacao, "titulo": titulo, "marca": (partes[0] if partes else ""),
+                    "placa_final": next((re.sub(r"\D", "", p) for p in partes if "placa" in sa(p)), None),
+                    "valor_atual": num_br(texto((re.search(r'class="valor-atual">(.*?)</span>', c, re.S) or [None, ""])[1])),
+                    "valor_inicial": num_br(texto((re.search(r"Valor inicial:\s*<b>(.*?)</b>", c, re.S) or [None, ""])[1])),
+                    "lote": lote.group(1) if lote else None, "uf": uf.group(1) if uf else None,
+                    "inicio": data_br(ini.group(1)) if ini else None, "foto": foto.group(1) if foto else None})
+    return out, total, paginas
+
+
+def vip_detalhe(pagina):
+    """quadro de características do lote: {'comitente', 'ano', 'km', 'combustivel', 'cor', 'procedencia', 'localizacao',
+       'final_placa', 'marca_modelo', 'cambio'} (só o que aparecer)"""
+    d = {}
+    for th, td in re.findall(r"<th>\s*(.*?)\s*</th>\s*<td[^>]*>(.*?)</td>", pagina, re.S):
+        k, v = sa(texto(th)), texto(td)
+        if not v:
+            continue
+        chave = {"comitente": "comitente", "ano": "ano", "km": "km", "combustivel": "combustivel", "cor": "cor",
+                 "procedencia": "procedencia", "localizacao": "localizacao", "final da placa": "final_placa",
+                 "marca/modelo": "marca_modelo", "marca / modelo": "marca_modelo", "modelo": "marca_modelo",
+                 "cambio": "cambio"}.get(k)
+        if chave and chave not in d:
+            d[chave] = v
+    m = re.search(r'"data_encerramento"\s*:\s*"(\d{2}/\d{2}/\d{4})', pagina)    # leilão online com prazo
+    if m:
+        d["encerramento"] = data_br(m.group(1))
+    return d
+
+
+RE_VIP_FINANCEIRA = re.compile(r"cons[oó]rcio|financiamento|financeira|itapeva|leasing|arrendamento", re.I)
+
+
+def vip_banco(comitente):
+    """(chave, nome) quando o comitente é banco, financeira ou administradora de consórcio; senão (None, None)"""
+    ch, nome = banco(comitente)
+    if ch:
+        return ch, (nome if ch != "banco" else (comitente or "").strip().title()[:80])
+    if RE_VIP_FINANCEIRA.search(comitente or ""):
+        return "financeira", (comitente or "").strip().title()[:80]
+    return None, None

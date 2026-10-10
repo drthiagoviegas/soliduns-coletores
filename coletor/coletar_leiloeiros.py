@@ -5,6 +5,11 @@ v1.1 (veículos): cada lote leva a MODALIDADE (SQL 114) — judicial (tribunal/v
 (tomada de preço / venda direta) ou extrajudicial — e o endereço da FOTO do lote no site do leiloeiro (SQL 116:
 só o link; a imagem não é copiada). Título sem ano repetido ("John Deere 350G 2020"); "Mini Trailer" não é a
 marca Mini; reboque/trailer vai para Caminhões.
+v1.1 (VIP Leilões): carros RECUPERADOS DE FINANCIAMENTO (alienação fiduciária) da VIP Leilões — a página
+/pesquisa/recuperadofinanciamento e a lista que ela mesma pede ao site (?handler=pesquisar, 12 por página) + a ficha de
+cada lote NOVO (comitente, km, combustível, cidade). Comitente banco/financeira/consórcio -> fonte 'banco'
+(Origem "Bancos (retomados)", selo do banco); os demais (seguradora, particular) -> fonte 'leiloeiro'. Modalidade
+extrajudicial. Lance = o valor atual do lote (já com os lances dados), nunca abaixo do valor inicial.
 
 Rotina "Leilões - bancos e leiloeiros" (leiloes-leiloeiros.yml), todo dia. Custo zero (sem IA paga).
 Lê as páginas PÚBLICAS de três leiloeiros oficiais que vendem imóveis e veículos de bancos:
@@ -48,14 +53,18 @@ MAX_PAG = int(os.environ.get("LEILOEIROS_MAX_PAGINAS") or 120)          # por si
 ZUK_CIDADES = int(os.environ.get("LEILOEIROS_ZUK_CIDADES") or 60)     # páginas de cidade (extras) no Zuk
 VEI_PAG = int(os.environ.get("LEILOEIROS_VEICULOS_PAGINAS") or 15)     # por categoria de veículo
 DIAS_SEM_VER = int(os.environ.get("LEILOEIROS_DIAS_SEM_VER") or 3)
-FONTES = [f.strip() for f in (os.environ.get("LEILOEIROS_FONTES") or "zuk,mega,superbid").split(",") if f.strip()]
+FONTES = [f.strip() for f in (os.environ.get("LEILOEIROS_FONTES") or "zuk,mega,superbid,vip").split(",") if f.strip()]
+VIP_PAG = int(os.environ.get("LEILOEIROS_VIP_PAGINAS") or 25)            # páginas da lista (12 lotes cada)
+VIP_FICHAS = int(os.environ.get("LEILOEIROS_VIP_FICHAS") or 260)         # fichas de lotes novos por execução
 BASES = {
     "zuk": (os.environ.get("ZUK_BASE") or "https://www.portalzuk.com.br").rstrip("/"),
     "mega": (os.environ.get("MEGA_BASE") or "https://www.megaleiloes.com.br").rstrip("/"),
     "superbid": (os.environ.get("SUPERBID_BASE") or "https://exchange.superbid.net").rstrip("/"),
+    "vip": (os.environ.get("VIP_BASE") or "https://www.vipleiloes.com.br").rstrip("/"),
 }
-NOMES = {"zuk": "Portal Zuk", "mega": "Mega Leilões", "superbid": "Superbid"}
-SITES = {"zuk": "https://www.portalzuk.com.br", "mega": "https://www.megaleiloes.com.br", "superbid": "https://www.superbid.net"}
+NOMES = {"zuk": "Portal Zuk", "mega": "Mega Leilões", "superbid": "Superbid", "vip": "VIP Leilões"}
+SITES = {"zuk": "https://www.portalzuk.com.br", "mega": "https://www.megaleiloes.com.br", "superbid": "https://www.superbid.net",
+         "vip": "https://www.vipleiloes.com.br"}
 UFS = {"AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI",
        "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"}
 COLS_RADAR = ("id", "fonte", "numero", "uf", "cidade", "bairro", "endereco", "tipo", "tipo_original", "preco", "avaliacao",
@@ -99,8 +108,9 @@ class Leitor:
             self.regras[host] = regra
         return self.regras[host].can_fetch(UA, url)
 
-    def pagina(self, url):
-        """(status, texto); status 'robots' quando o robots.txt proíbe"""
+    def pagina(self, url, dados=None, cabecalhos=None):
+        """(status, texto); status 'robots' quando o robots.txt proíbe. Com 'dados': envia o formulário (POST),
+           como o navegador faz na página (mesma sessão/cookie)."""
         if not self.permitido(url):
             return "robots", ""
         espera = PAUSA - (time.time() - self.ultima)
@@ -108,7 +118,8 @@ class Leitor:
             time.sleep(espera)
         for tentativa in range(2):
             try:
-                r = self.s.get(url, timeout=60)
+                r = (self.s.post(url, data=dados, headers=cabecalhos or {}, timeout=60) if dados is not None
+                     else self.s.get(url, timeout=60))
                 self.ultima = time.time()
                 self.paginas += 1
                 if r.status_code == 429:
@@ -373,6 +384,8 @@ def titulo_veiculo(linha, original):
     if linha.get("marca"):
         mod = linha.get("familia") or (linha.get("modelo_texto") or "").split("/", 1)[-1][:30]
         mod = sem_ano_final(mod) if mod and mod != linha.get("modelo_texto") else None
+        if mod and mod.isupper() and len(mod) > 3:              # "PUNTO TURBO T-JET" -> "Punto Turbo T-Jet"
+            mod = " ".join(w if re.search(r"\d", w) and len(w) <= 6 else w.title() for w in mod.split())
         t = " ".join(x for x in (linha["marca"], mod) if x)
         return (t + (f" {ano}" if ano else ""))[:90]
     t = re.sub(r"\s+em leil[aã]o\s+-.*$", "", original or "", flags=re.I)
@@ -507,7 +520,7 @@ class Resultado:
         log(f"    aviso: {m}")
 
 
-def abrir(leitor, res, url, parte="imoveis", essencial=True):
+def abrir(leitor, res, url, parte="imoveis", essencial=True, dados=None, cabecalhos=None):
     """texto da página; '' se não deu para ler; None = parar este site (tempo/teto)"""
     if sem_tempo():
         res.completo = {"imoveis": False, "veiculos": False}
@@ -518,7 +531,7 @@ def abrir(leitor, res, url, parte="imoveis", essencial=True):
             res.completo[parte] = False
         res.aviso(f"teto de {MAX_PAG} páginas atingido")
         return None
-    st, txt = leitor.pagina(url)
+    st, txt = leitor.pagina(url, dados, cabecalhos)
     res.paginas += 1
     if st == "robots":
         res.aviso(f"robots.txt proíbe {up.urlparse(url).path} — página não lida")
@@ -669,7 +682,112 @@ def ler_superbid(leitor, catalogo, cidades, agora, hoje):
     return res
 
 
-LEITORES = {"zuk": ler_zuk, "mega": ler_mega, "superbid": ler_superbid}
+def veiculo_vip(x, ficha, catalogo, cidades, agora, hoje):
+    """cartão + ficha da VIP -> linha de veiculos_leiloes"""
+    if re.search(r"vendid|encerrad|cancelad|retirad|suspens|condicional", R.sa(x.get("situacao") or "") + " " + R.sa(x.get("estado") or "")):
+        return None
+    marca = (x.get("marca") or "").strip()
+    titulo = (x.get("titulo") or "").strip()
+    modelo, _, anos = titulo.rpartition(" - ") if re.search(r" - \d{4}", titulo) else (titulo, "", "")
+    anos = anos or (ficha.get("ano") or "").replace(" ", "")
+    km = ficha.get("km")
+    texto = (f"{marca.upper()}/{modelo.upper()} {anos}. " + (f"KM {km} km. " if km else "")
+             + (f"Combustível {ficha['combustivel']}. " if ficha.get("combustivel") else "")
+             + (f"Cor: {ficha['cor']}. " if ficha.get("cor") else "")
+             + (f"Câmbio {ficha['cambio']}. " if ficha.get("cambio") else "")
+             + (f"Procedência: {ficha['procedencia']}. " if ficha.get("procedencia") else "Procedência: recuperado de financiamento. ")
+             + (f"Comitente: {ficha['comitente']}. " if ficha.get("comitente") else "")
+             + (f"Placa final {x['placa_final']}. " if x.get("placa_final") else ""))
+    cidade, uf = None, x.get("uf")
+    m = re.search(r",\s*([^,]{2,60}?),\s*([A-Z]{2})\s*-\s*CEP", ficha.get("localizacao") or "")
+    if m:
+        cidade, uf = m.group(1).strip().title(), m.group(2)
+    atual, inicial = x.get("valor_atual") or 0, x.get("valor_inicial") or 0
+    lance = max(atual, inicial) or None
+    item = {"codigo": x["codigo"], "link": x["link"], "titulo": f"{marca.title()} {modelo.title()} - {anos}".strip(" -"),
+            "comitente": ficha.get("comitente") or "", "foto": x.get("foto")}
+    tipo = tipo_categoria(modelo) if tipo_categoria(modelo) in ("maquina", "caminhao", "moto") else None
+    fim = ficha.get("encerramento") if (ficha.get("encerramento") or "") > (x.get("inicio") or "") else None
+    v = linha_veiculo("vip", item, texto, tipo, catalogo, cidades, agora, hoje, uf, cidade, lance, x.get("inicio"), fim)
+    if re.search(r"sinistr", R.sa(ficha.get("procedencia") or "")) and v.get("condicao") in (None, "nao_informado", "circulacao"):
+        v["condicao"] = "recuperavel"
+    if x.get("placa_final") and not v.get("placa_final"):
+        v["placa_final"] = x["placa_final"][:1]
+    ch, nome = R.vip_banco(ficha.get("comitente"))
+    v["modalidade"] = "judicial" if RE_JUDICIAL.search(ficha.get("comitente") or "") else "extrajudicial"
+    if ch:
+        v.update(fonte="banco", anunciante_sigla=ch, origem_nome=nome)
+    elif ficha.get("comitente"):
+        v["origem_nome"] = "VIP Leilões · " + ficha["comitente"].strip().title()[:60]
+    v["texto_busca"] = texto_busca(v["titulo"], v.get("marca"), v.get("familia"), v.get("modelo_texto"), v.get("cidade"),
+                                   v["descricao"], "VIP Leilões", ficha.get("comitente"), "recuperado financiamento banco")
+    return v
+
+
+VIP_CACHE = {}          # fichas já lidas em execuções anteriores (id -> campos gravados), preenchido em main()
+
+
+def ler_vip(leitor, catalogo, cidades, agora, hoje):
+    res, b = Resultado("vip"), BASES["vip"]
+    res.completo["imoveis"] = False                       # a VIP aqui é só veículos
+    fichas, conhecidas = 0, len(VIP_CACHE)
+    try:
+        pag = abrir(leitor, res, b + "/pesquisa/recuperadofinanciamento", "veiculos")
+        if not pag:
+            res.completo["veiculos"] = False
+            return res
+        alvo, dados = R.vip_formulario(pag)
+        if not alvo or dados.get("Filtro.Procedencia") in (None, ""):
+            res.completo["veiculos"] = False
+            res.aviso("página sem o formulário de pesquisa (formato mudou) — nada lido")
+            return res
+        cab = {"Referer": SITES["vip"] + "/pesquisa/recuperadofinanciamento", "X-Requested-With": "XMLHttpRequest"}
+        fila, vistos_pag, n = [b + alvo], set(), 0
+        while fila and n < VIP_PAG:
+            url = fila.pop(0)
+            if url in vistos_pag:
+                continue
+            vistos_pag.add(url)
+            n += 1
+            txt = abrir(leitor, res, url, "veiculos", dados=dados, cabecalhos=cab)
+            if txt is None:
+                break
+            cartoes, total, outras = R.vip_lotes(txt)
+            if n == 1 and not cartoes:
+                res.completo["veiculos"] = False
+                res.aviso("lista de lotes vazia ou em outro formato — nada lido")
+                break
+            res.lidos += len(cartoes)
+            for u in outras:
+                cheio = b + u if u.startswith("/") else u
+                if cheio not in vistos_pag and cheio not in fila:
+                    fila.append(cheio)
+            for x in cartoes:
+                vid = "vip-" + x["codigo"]
+                ficha = VIP_CACHE.get(vid)
+                if ficha is None and fichas < VIP_FICHAS:
+                    t2 = abrir(leitor, res, na_base("vip", x["link"]), "veiculos", essencial=False)
+                    if t2 is None:
+                        break
+                    ficha = R.vip_detalhe(t2) if t2 else {}
+                    fichas += 1
+                    if ficha:
+                        VIP_CACHE[vid] = ficha                     # o mesmo lote em outra página não reabre
+                v = veiculo_vip(x, ficha or {}, catalogo, cidades, agora, hoje)
+                if v:
+                    res.veiculos[v["id"]] = v
+            if n == 1:
+                paginas = max(1, -(-total // 12))
+                if paginas > VIP_PAG:
+                    res.completo["veiculos"] = False
+                    res.aviso(f"{paginas} páginas na lista, lidas {VIP_PAG}")
+        log(f"    VIP: {fichas} ficha(s) de lote novo lidas; {conhecidas} já conhecidas de execuções anteriores")
+    except StopIteration:
+        pass
+    return res
+
+
+LEITORES = {"zuk": ler_zuk, "mega": ler_mega, "superbid": ler_superbid, "vip": ler_vip}
 
 
 # ------------------------------------------------------------ principal
@@ -695,6 +813,17 @@ def main():
         if not marcas:
             log("AVISO: catálogo FIPE vazio — marca/modelo dos veículos ficam sem casar nesta execução.")
     leitor = Leitor()
+    if "vip" in FONTES and not sem_gravar:                # fichas já lidas: não abre de novo (menos pedidos ao site)
+        for y in sb_get("veiculos_leiloes?select=id,origem_nome,anunciante_sigla,descricao,cidade,uf&id=like.vip-*"):
+            d = y.get("descricao") or ""
+            ficha = {k: m.group(1).strip() for k, m in (
+                ("comitente", re.search(r"Comitente: ([^.]+)\.", d)), ("km", re.search(r"KM ([\d.]+) km", d)),
+                ("combustivel", re.search(r"Combustível ([^.]+)\.", d)), ("cor", re.search(r"Cor: ([^.]+)\.", d)),
+                ("cambio", re.search(r"Câmbio ([^.]+)\.", d)), ("procedencia", re.search(r"Procedência: ([^.]+)\.", d))) if m}
+            if ficha.get("comitente"):
+                if y.get("cidade") and y.get("uf"):
+                    ficha["localizacao"] = f"x, {y['cidade']}, {y['uf']} - CEP"
+                VIP_CACHE[y["id"]] = ficha
     resumo, falhas, tot_im, tot_vei = {}, 0, 0, 0
     for f in FONTES:
         if f not in LEITORES:
@@ -733,15 +862,22 @@ def main():
             if n:
                 msg += f"; {n} vendido(s) saíram"
         limite = (agora_dt - dt.timedelta(days=DIAS_SEM_VER)).isoformat().replace("+00:00", "Z")
-        if res.completo["imoveis"] and imoveis:
+        if f == "vip":
+            msg += f" (bancos/financeiras: {sum(1 for v in veiculos if v.get('fonte') == 'banco')})"
+            if veiculos:
+                sb_upsert("veiculos_fontes", [{"fonte": "banco", "nome": "Bancos (retomados)", "situacao": "ativa",
+                                               "ultima_execucao": agora,
+                                               "mensagem": "VIP Leilões — recuperados de financiamento (página pública, todo dia)"}], "fonte")
+        elif res.completo["imoveis"] and imoveis:
             n = sb_patch("leiloes_radar", {"fonte": f"eq.{f}", "situacao": "eq.ativo", "visto_em": f"lt.{limite}"},
                          {"situacao": "saiu", "saiu_em": agora})
             msg += f"; imóveis não vistos há {DIAS_SEM_VER} dias: {n} saíram"
         else:
             msg += "; leitura dos imóveis incompleta — nenhum sai por não ter sido visto"
         if res.completo["veiculos"] and veiculos:
-            nv = sb_patch("veiculos_leiloes", {"fonte": "eq.leiloeiro", "anunciante_sigla": f"eq.{f}", "situacao": "eq.ativo",
-                                               "atualizado_em": f"lt.{limite}"}, {"situacao": "encerrado", "atualizado_em": agora})
+            filtro = ({"id": "like.vip-*"} if f == "vip" else {"fonte": "eq.leiloeiro", "anunciante_sigla": f"eq.{f}"})
+            nv = sb_patch("veiculos_leiloes", dict(filtro, situacao="eq.ativo", atualizado_em=f"lt.{limite}"),
+                          {"situacao": "encerrado", "atualizado_em": agora})
             msg += f"; veículos não vistos: {nv} encerrados"
         resumo[f] = msg
 
