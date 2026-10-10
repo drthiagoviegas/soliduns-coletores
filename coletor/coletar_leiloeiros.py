@@ -1,5 +1,10 @@
 """
-SOLIDUNS — LEILÕES DE BANCOS E LEILOEIROS — v1.0 (09/10/2026)
+SOLIDUNS — LEILÕES DE BANCOS E LEILOEIROS — v1.1 (10/10/2026)
+
+v1.1 (veículos): cada lote leva a MODALIDADE (SQL 114) — judicial (tribunal/vara/praça judicial), venda direta
+(tomada de preço / venda direta) ou extrajudicial — e o endereço da FOTO do lote no site do leiloeiro (SQL 116:
+só o link; a imagem não é copiada). Título sem ano repetido ("John Deere 350G 2020"); "Mini Trailer" não é a
+marca Mini; reboque/trailer vai para Caminhões.
 
 Rotina "Leilões - bancos e leiloeiros" (leiloes-leiloeiros.yml), todo dia. Custo zero (sem IA paga).
 Lê as páginas PÚBLICAS de três leiloeiros oficiais que vendem imóveis e veículos de bancos:
@@ -34,7 +39,7 @@ import leiloeiros_regras as R  # noqa: E402
 from veiculos_regras import Catalogo, Cidades, ler_lote, limpar_privado, texto_busca, tipo_pelo_texto  # noqa: E402
 from veiculos_regras import VERSAO_REGRAS as VERSAO_VEI  # noqa: E402
 
-VERSAO = "1.0"
+VERSAO = "1.1"
 UA = "SOLIDUNS-coletor/1.0 (+contato@soliduns.com.br)"
 TESTE = bool(os.environ.get("LEILOES_TESTE"))
 PAUSA = float(os.environ.get("LEILOEIROS_PAUSA") or (0 if TESTE else 2))
@@ -248,7 +253,7 @@ def imovel_zuk(x, cidades, agora, hoje):
 
 
 def imovel_mega(x, cidades, agora, hoje):
-    if x.get("modalidade") != "extrajudicial" or "/imoveis/" not in x.get("link", ""):
+    if x.get("modalidade") == "judicial" or "/imoveis/" not in x.get("link", ""):
         return None
     if R.sa(x.get("status")).startswith(("encerrad", "vendid", "suspens", "cancelad")):
         return None
@@ -307,6 +312,28 @@ def imovel_superbid(x, cidades, agora, hoje):
 RE_FIPE_INFORMADA = re.compile(r"pre[cç]o\s+fipe\s*:?\s*R\$\s*([\d.]+(?:,\d{2})?)", re.I)
 PALAVRAS_NAO_MARCA = {"carro", "moto", "motocicleta", "caminhao", "onibus", "direitos", "sobre", "veiculo", "trator", "com",
                       "cavalo", "mecanico", "veiculos", "outros", "em", "leilao", "utilitario", "camioneta", "caminhonete", "pickup", "van", "furgao", "sucata"}
+# "Mini Trailer", "Mini Carregadeira", "Mini Escavadeira": "Mini" aqui não é a marca
+RE_MINI_NAO_MARCA = re.compile(r"^mini\s+(?:trailer|reboque|carregadeira|escavadeira|trator|van|onibus|ônibus|buggy|moto|caminh)", re.I)
+RE_JUDICIAL = re.compile(r"tribunal|\bvara\b|justi[cç]a|ju[ií]zo|\btj[a-z]{2,3}\b|\btr[ft]\s?\d|fal[eê]ncia|recupera[cç][aã]o\s+judicial|"
+                         r"leil[aã]o\s+judicial|pra[cç]a\s+judicial|execu[cç][aã]o\s+fiscal", re.I)
+RE_VENDA_DIRETA = re.compile(r"tomada\s+de\s+pre[cç]o|venda\s+direta|compra\s+direta|mercado\s+balc[aã]o|compre\s+j[aá]", re.I)
+
+
+def modalidade_lote(fonte, x):
+    """judicial | venda_direta | extrajudicial (o judicial vale mesmo quando o tribunal vende por proposta)"""
+    if fonte == "mega":
+        return x.get("modalidade") or "extrajudicial"
+    if fonte == "superbid":
+        if x.get("judicial") or RE_JUDICIAL.search(" ".join((x.get("evento") or "", x.get("vendedor") or ""))):
+            return "judicial"
+        return "venda_direta" if RE_VENDA_DIRETA.search(x.get("modalidade_txt") or "") else "extrajudicial"
+    if RE_JUDICIAL.search(x.get("comitente") or ""):                    # zuk
+        return "judicial"
+    return "venda_direta" if RE_VENDA_DIRETA.search(" ".join((x.get("tipo_txt") or "", x.get("status") or ""))) else "extrajudicial"
+
+
+def foto_ok(u):
+    return u if isinstance(u, str) and re.match(r"^https://[\w.-]+/[^\s\"'<>]{4,400}$", u) else None
 
 
 RE_MM_MISTO = re.compile(r"\b([A-Za-zÀ-ú][A-Za-zÀ-ú.\-]{1,15}(?:\s[A-Za-z]{2,10})?)\s*/\s*([A-Za-z0-9][\w .\-]{1,30})")
@@ -317,6 +344,8 @@ def marca_no_texto(titulo, descricao, catalogo, tipo):
        'Carro, Volkswagen/Fox 1.6' (Zuk) ou 'Carro Volkswagen Passat LS - 1982' (Mega).
        Só aceita o nome exato de uma marca da Tabela FIPE (ou apelido conhecido). -> (tipo, marca, modelo)"""
     for m in RE_MM_MISTO.finditer((descricao or "")[:400]):
+        if RE_MINI_NAO_MARCA.match(m.group(0)):
+            continue
         t, mm = catalogo.marca(m.group(1), tipo)
         if mm and (not tipo or t == tipo):
             return t, mm, m.group(2).strip()
@@ -325,7 +354,7 @@ def marca_no_texto(titulo, descricao, catalogo, tipo):
         for i in range(len(p)):
             for n in (2, 1):
                 cand = " ".join(p[i:i + n])
-                if len(cand) < 2 or R.sa(cand) in PALAVRAS_NAO_MARCA:
+                if len(cand) < 2 or R.sa(cand) in PALAVRAS_NAO_MARCA or RE_MINI_NAO_MARCA.match(" ".join(p[i:i + 2])):
                     continue
                 t, mm = catalogo.marca(cand, tipo)
                 if mm and (not tipo or t == tipo):
@@ -334,15 +363,21 @@ def marca_no_texto(titulo, descricao, catalogo, tipo):
     return None, None, ""
 
 
+def sem_ano_final(t):
+    return re.sub(r"(?:[\s\-/]*(?:19|20)\d\d)+\s*$", "", t or "").strip(" -/") or None
+
+
 def titulo_veiculo(linha, original):
     """'Volkswagen Fox 2014' (como no DJEN); sem marca, o título do site sem o endereço"""
     ano = linha.get("ano_modelo") or linha.get("ano_fabricacao")
     if linha.get("marca"):
         mod = linha.get("familia") or (linha.get("modelo_texto") or "").split("/", 1)[-1][:30]
-        t = " ".join(x for x in (linha["marca"], mod if mod and mod != linha.get("modelo_texto") else None) if x)
+        mod = sem_ano_final(mod) if mod and mod != linha.get("modelo_texto") else None
+        t = " ".join(x for x in (linha["marca"], mod) if x)
         return (t + (f" {ano}" if ano else ""))[:90]
     t = re.sub(r"\s+em leil[aã]o\s+-.*$", "", original or "", flags=re.I)
     t = re.sub(r"^ve[ií]culos?\s*-\s*", "", t, flags=re.I).strip()
+    t = re.sub(r"\b((?:19|20)\d\d)(?:\s*/?\s*\1\b)+", r"\1", t)     # "2020 2020" -> "2020"
     if not t or R.sa(t) in ("outros", "veiculo", "veiculos"):
         t = {"carro": "Veículo", "moto": "Motocicleta", "caminhao": "Caminhão/ônibus", "maquina": "Máquina"}.get(linha["tipo"], "Veículo")
         t += f" {ano}" if ano else ""
@@ -355,7 +390,7 @@ def tipo_categoria(txt):
         return "fora"
     if re.search(r"trator|maquina|agricol|colheitadeira|escavadeira|retroescavadeira|carregadeira|empilhadeira", s):
         return "maquina"
-    if re.search(r"caminh|onibus|cavalo mec|carreta|reboque|semirreboque|micro-?onibus", s):
+    if re.search(r"caminh|onibus|cavalo mec|carreta|reboque|semirreboque|micro-?onibus|trailer", s):
         return "caminhao"
     if re.search(r"\bmoto|motocicl|motoneta|scooter|quadriciclo|triciclo", s):
         return "moto"
@@ -383,7 +418,8 @@ def linha_veiculo(fonte, x, texto, tipo_cat, catalogo, cidades, agora, hoje, uf,
                  lance_inicial=lance if lance and 50 <= lance <= 50_000_000 else None,
                  data_leilao=data_leilao, data_fim=data_fim, lote=str(x["codigo"])[:40], processo=None,
                  leiloeiro=NOMES[fonte], url=x["link"],
-                 descricao=limpar_privado(texto)[:600], situacao="ativo", atualizado_em=agora)
+                 descricao=limpar_privado(texto)[:600], situacao="ativo", atualizado_em=agora,
+                 modalidade=modalidade_lote(fonte, x), foto_url=foto_ok(x.get("foto")))
     if not linha.get("ano_modelo") and not linha.get("ano_fabricacao"):    # "Carro Volkswagen Passat LS - 1982", "... - 2013/2014"
         m = re.search(r"\b(19[5-9]\d|20[0-4]\d)(?:\s*/\s*(19[5-9]\d|20[0-4]\d))?\s*$", x.get("titulo") or "")
         if m:

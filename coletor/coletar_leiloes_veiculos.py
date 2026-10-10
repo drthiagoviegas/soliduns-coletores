@@ -1,5 +1,10 @@
 """
-SOLIDUNS — LEILÃO DE AUTOMÓVEIS — Coletor dos lotes — v1.1 (09/10/2026)
+SOLIDUNS — LEILÃO DE AUTOMÓVEIS — Coletor dos lotes — v1.2 (10/10/2026)
+
+v1.2: só entra EDITAL de leilão (ou designação de leilão/praça) com DATA e veículo IDENTIFICADO (marca da FIPE,
+placa/Renavam/chassi, ou ano + valor). Sentenças, decisões, processos criminais e repetições da mesma publicação
+ficam de fora (eram 9 de cada 10 lotes do DJEN). Siglas (CF/1988, SSP/SC, TJ/SP) não viram marca. Lote marcado
+como 'cancelado' no Supabase (SQL 115) não volta. Todo lote do DJEN leva modalidade = 'judicial' (SQL 114).
 
 v1.1: a função de São Paulo do Supabase se chama "swift-api" (não "djen-relay"): na v1.0 todas as consultas ao
 Diário de Justiça davam "não encontrada" e a rotina parava depois de ~18 min. O resumo agora é gravado também
@@ -37,7 +42,7 @@ import requests
 from veiculos_regras import (ESTADO_NOME, UFS27, VERSAO_REGRAS, Catalogo, Cidades, extrair_lotes,
                              parece_edital_de_veiculo, sa, texto_busca)
 
-VERSAO = "1.1"
+VERSAO = "1.2"
 TRIBUNAIS = ["TJDFT", "TJGO", "TJSP", "TJMG", "TJBA", "TJCE", "TJPB", "TJRN",
              "TRF1", "TRF3", "TRF5", "TRF6", "TRT2", "TRT3", "TRT5", "TRT7", "TRT10", "TRT13", "TRT15", "TRT18", "TRT21",
              "TJRJ", "TJPR", "TJSC", "TJRS", "TJES", "TJPE", "TRF2", "TRF4", "TRT1", "TRT4", "TRT6", "TRT9", "TRT12", "TRT17"]
@@ -163,7 +168,8 @@ def uf_federal(t):
 
 
 def titulo(x):
-    partes = [x.get("marca"), x.get("familia") or (x.get("modelo_texto") or "").split("/")[-1][:30] or None]
+    mod = x.get("familia") or ((x.get("modelo_texto") or "").split("/")[-1][:30] if x.get("marca") else None)
+    partes = [x.get("marca"), re.sub(r"(?:\s*(?:19|20)\d\d)+\s*$", "", mod or "").strip() or None]
     ano = x.get("ano_modelo") or x.get("ano_fabricacao")
     t = " ".join(p for p in partes if p) or {"carro": "Veículo", "moto": "Motocicleta", "caminhao": "Caminhão/ônibus",
                                                "maquina": "Máquina"}.get(x["tipo"], "Veículo")
@@ -174,7 +180,7 @@ def linhas_do_edital(pub, catalogo, cidades, hoje):
     texto = pub["texto"]
     trib = pub["tribunal"]
     uf_padrao = UF_DO_TRIBUNAL.get(trib) or uf_federal(texto)
-    edital, lotes = extrair_lotes(texto, catalogo, cidades, uf_padrao, hoje)
+    edital, lotes = extrair_lotes(texto, catalogo, cidades, uf_padrao, hoje, exigir=True)
     agora = dt.datetime.now(dt.timezone.utc).isoformat()
     out = []
     for x in lotes:
@@ -186,7 +192,7 @@ def linhas_do_edital(pub, catalogo, cidades, hoje):
                                         "data_leilao", "data_fim", "lote", "descricao")}
         linha.update(id=f"djen-{pub['id']}-{x['lote']}", fonte="djen", origem_nome=trib, anunciante_sigla=trib.lower(),
                      processo=edital.get("processo") or pub.get("processo"), leiloeiro=edital.get("leiloeiro"),
-                     url=pub.get("link"), titulo=titulo(x), situacao="ativo", atualizado_em=agora)
+                     url=pub.get("link"), titulo=titulo(x), modalidade="judicial", situacao="ativo", atualizado_em=agora)
         linha["texto_busca"] = texto_busca(linha["titulo"], linha.get("marca"), linha.get("familia"), linha.get("modelo_texto"),
                                            linha.get("cidade"), linha.get("patio"), linha.get("descricao"), trib)
         out.append(linha)
@@ -202,7 +208,8 @@ def main():
     if not [m for m in marcas if m["tipo"] != "maquina"]:
         log("AVISO: catálogo FIPE vazio — rode antes a etapa 'Tabela FIPE'. Marca/modelo ficam sem casar nesta execução.")
     catalogo, cidades = Catalogo(marcas, modelos), Cidades()
-    existentes = {x["id"]: x for x in sb_get("veiculos_leiloes?select=id,modelo_codigo,ano_modelo&fonte=eq.djen&situacao=eq.ativo")}
+    existentes = {x["id"]: x for x in sb_get("veiculos_leiloes?select=id,modelo_codigo,ano_modelo,processo,lote,descricao&fonte=eq.djen&situacao=eq.ativo")}
+    cancelados = {x["id"] for x in sb_get("veiculos_leiloes?select=id&fonte=eq.djen&situacao=eq.cancelado")}
 
     falhas, editais, linhas = 0, 0, []
     for t in TRIBUNAIS:
@@ -231,8 +238,18 @@ def main():
         ant = existentes.get(x["id"])
         if ant and (ant.get("modelo_codigo") != x.get("modelo_codigo") or ant.get("ano_modelo") != x.get("ano_modelo")):
             x.update(fipe_valor=None, fipe_codigo=None, fipe_referencia=None)
-    vistos = {}
+    def chave(x):
+        return (x.get("processo") or "", x.get("lote"), re.sub(r"\W+", "", (x.get("descricao") or "").lower())[:400])
+    vistos, repetidos = {}, 0
+    mesmos = {chave(x): x["id"] for x in existentes.values()}
     for x in linhas:
+        if x["id"] in cancelados:                           # tirado do painel (SQL 115 ou à mão): não volta
+            continue
+        k = chave(x)
+        if mesmos.get(k, x["id"]) != x["id"]:               # mesma publicação repetida em outro dia/caderno
+            repetidos += 1
+            continue
+        mesmos[k] = x["id"]
         vistos[x["id"]] = x
     linhas = list(vistos.values())
     # mesmas colunas em cada envio (o PostgREST usa as chaves do 1º item para o lote todo)
@@ -244,7 +261,7 @@ def main():
     com_cid = sum(1 for x in linhas if x.get("cidade"))
     log("")
     log(f"DJEN: {editais} edital(is) com veículo -> {len(linhas)} lote(s) | marca FIPE em {casados} | modelo em {com_mod} | "
-        f"cidade IBGE em {com_cid}")
+        f"cidade IBGE em {com_cid} | repetidos ignorados {repetidos}")
     log(f"Encerrados (data passou): {sb_rpc('veiculos_vencer')}")
     sb_upsert("veiculos_fontes", [{"fonte": "djen", "nome": "Diário de Justiça (DJEN)", "situacao": "ativa",
                                    "ultima_execucao": dt.datetime.now(dt.timezone.utc).isoformat(),

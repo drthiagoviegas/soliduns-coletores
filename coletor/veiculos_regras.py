@@ -20,7 +20,7 @@ import os
 import re
 import unicodedata
 
-VERSAO_REGRAS = "veic-regras-v1"
+VERSAO_REGRAS = "veic-regras-v2"
 
 
 def sa(t):
@@ -344,8 +344,42 @@ def limpar_privado(t):
     return re.sub(r"\s+", " ", t).strip()
 
 
+# v2 (09/10/2026): siglas de órgãos e leis lidas como "MARCA/MODELO" (CF/1988, SSP/SC, TJ/SP, DG/NJ, DETRAN/GO)
+NAO_MARCA_SIGLA = re.compile(r"^(R\$|CPF|CNPJ|UF|LTDA|S\.?A|CF|CC|CPC|CPP|CLT|CTN|CTB|SSP|SDS|PC|PM|PF|PRF|DG|DETRAN|CIRETRAN|DENATRAN|"
+                             r"SENATRAN|TJ\w*|TR[FT]\d*|STJ|STF|TST|CNJ|OAB|MP\w*|DPU|DPE|INSS|RFB|PGFN|PGE|PGM|AGU|IBGE|ART|ARTS|"
+                             r"LEI|DEC|INC|PAR|N|NR|NO|ID|SEI|PJE|DJE|DJEN|RG|CRV|CRLV|CNH|DUT|ATPV|SJ\w*|SUBSE\w*|VARA|JUIZO|"
+                             r"COMARCA|OF|PROC|AUTOS)$", re.I)
+# v2: publicação que é sentença, decisão, acórdão etc. só vale se designar leilão/praça com data
+RE_NAO_EDITAL = re.compile(r"\b(julgo\s+(?:procedente|improcedente|extint)|homologo|acord[aã]m|ementa\s*:|"
+                           r"den[uú]ncia|r[eé]u\s+preso|pris[aã]o\s+preventiva|inqu[eé]rito\s+policial|"
+                           r"apreens[aã]o\s+(?:e\s+)?(?:restitui|devolu)|restitui[cç][aã]o\s+de\s+(?:coisa|bem|ve[ií]culo)|"
+                           r"busca\s+e\s+apreens[aã]o|tutela\s+de\s+urg[eê]ncia|agravo\s+de\s+instrumento|embargos\s+de\s+declara)", re.I)
+RE_DESIGNA_LEILAO = re.compile(r"(designo|designad[oa]s?|fica[mr]?\s+designad|ser[aá]\s+realizad[oa]|realizar-se-[aá]|"
+                               r"edital\s+de\s+(?:leil|hasta|pra[cç]a|aliena)|leil[aã]o\s+(?:p[uú]blico|eletr[oô]nico|judicial)|"
+                               r"(?:1|2|primeir|segund)[ºªo°a]?\s*(?:leil[aã]o|pra[cç]a|hasta))", re.I)
+RE_ID_VEICULO = re.compile(r"renavam|\bchassi|\bplaca\b|marca\s*/\s*modelo|ano\s*(?:de\s*)?fab|\bfab\.?\s*/\s*mod", re.I)
+
+
 def parece_edital_de_veiculo(texto):
-    return bool(RE_EDITAL.search(texto)) and bool(RE_VEICULO_FORTE.search(texto))
+    """v2: edital de leilão (ou designação de leilão/praça) com veículo identificado e data; sentenças,
+       decisões, processos criminais e ordens de busca e apreensão sem leilão designado não entram"""
+    if not (RE_EDITAL.search(texto) and RE_VEICULO_FORTE.search(texto)):
+        return False
+    if not RE_DESIGNA_LEILAO.search(texto) or not datas(texto):
+        return False
+    if RE_NAO_EDITAL.search(texto) and not re.search(r"edital\s+de\s+(?:leil|hasta|pra[cç]a|aliena)", texto, re.I):
+        return False
+    return True
+
+
+def lote_valido(r, seg):
+    """v2: só entra o lote com data de leilão e veículo identificado (marca da FIPE, ou placa/Renavam/chassi,
+       ou ano + valor de avaliação/lance)"""
+    if not r or not r.get("data_leilao"):
+        return False
+    if r.get("marca_codigo") or RE_ID_VEICULO.search(seg):
+        return True
+    return bool((r.get("ano_modelo") or r.get("ano_fabricacao")) and (r.get("avaliacao") or r.get("lance_inicial")))
 
 
 def _segmentos(texto):
@@ -386,7 +420,7 @@ def ler_lote(seg, catalogo, cidades, uf_padrao=None, hoje=None):
 
     # marca / modelo (padrão MARCA/MODELO do Renavam)
     for bruto_marca, bruto_modelo in _candidatos_marca(t):
-        if re.match(r"^(R\$|CPF|CNPJ|UF|RS|SP|LTDA|S\.?A)$", bruto_marca.strip(), re.I):
+        if NAO_MARCA_SIGLA.match(bruto_marca.strip()) or bruto_marca.strip().upper() in UFS27:
             continue
         if catalogo:
             tipo_m, marca = catalogo.marca(bruto_marca, tipo_txt)
@@ -416,6 +450,8 @@ def ler_lote(seg, catalogo, cidades, uf_padrao=None, hoje=None):
         fab = int(mf.group(1)) if mf else None
         mod = int((mm.group(1) or mm.group(2))) if mm else None
     ano_max = (hoje or dt.date.today()).year + 1
+    if not m or not (0 <= int(m.group(2)) - int(m.group(1)) <= 1):
+        ano_max -= 1                                       # v2: ano solto ("ano: 2027") não passa do ano corrente
     r["ano_fabricacao"] = fab if fab and fab <= ano_max else None
     r["ano_modelo"] = mod if mod and mod <= ano_max else None
 
@@ -472,7 +508,7 @@ def ler_lote(seg, catalogo, cidades, uf_padrao=None, hoje=None):
     return r
 
 
-def extrair_lotes(texto, catalogo=None, cidades=None, uf_padrao=None, hoje=None):
+def extrair_lotes(texto, catalogo=None, cidades=None, uf_padrao=None, hoje=None, exigir=False):
     """lista de lotes de veículo (dicts) + dados do edital"""
     t = re.sub(r"<[^>]+>", " ", texto or "")
     t = re.sub(r"[ \t\u00a0]+", " ", t)
@@ -491,6 +527,8 @@ def extrair_lotes(texto, catalogo=None, cidades=None, uf_padrao=None, hoje=None)
         if not r["uf"] and uf_padrao:
             r["uf"] = uf_padrao
         r["lote"] = n
+        if exigir and not lote_valido(r, seg):
+            continue
         lotes.append(r)
     return edital, lotes
 

@@ -163,6 +163,7 @@ def zuk(pagina, url_base="https://www.portalzuk.com.br"):
             if m2:
                 cidade, uf, bairro = m2.group(1).strip(), m2.group(2), (m2.group(3) or "").strip() or None
         infos = [texto(x) for x in re.findall(r'card-property-info-label">(.*?)</span>', c, re.S)]
+        foto = re.search(r'<img[^>]+src="(https://imagens\.portalzuk\.com\.br/[^"]+\.(?:jpe?g|png|webp))"', c, re.I)
         pracas = []
         for p in re.finditer(r'<li class="card-property-price"[^>]*data-pracas[^>]*>(.*?)</li>', c, re.S):
             bloco = p.group(1)
@@ -174,7 +175,8 @@ def zuk(pagina, url_base="https://www.portalzuk.com.br"):
         out.append({"codigo": cod.group(1) if cod else link.group(1).rsplit("/", 1)[-1], "link": htmlmod.unescape(link.group(1)).replace("'", "%27"),
                     "titulo": titulo, "comitente": comitente, "evento": evento, "status": status, "tipo_txt": tipo_txt,
                     "cidade": cidade, "uf": uf, "bairro": bairro, "endereco": endereco, "infos": infos, "pracas": pracas,
-                    "descricao": texto(re.sub(r"^[^<]*?>", "", c, count=1))[:600], "veiculo": "/veiculo/" in link.group(1)})
+                    "descricao": texto(re.sub(r"^[^<]*?>", "", c, count=1))[:600], "veiculo": "/veiculo/" in link.group(1),
+                    "foto": foto.group(1) if foto else None})
     return out
 
 
@@ -199,6 +201,7 @@ def mega(pagina):
         icone = re.search(r'bank_icons/([a-z0-9-]+)\.png', c)
         modal = texto((re.search(r'<div class="card-instance-title">\s*<a[^>]*>(.*?)</a>', c, re.S) or [None, ""])[1])
         status = texto((re.search(r'<div class="card-status">(.*?)</div>', c, re.S) or [None, ""])[1])
+        foto = re.search(r'data-bg="(https://cdn\d*\.megaleiloes\.com\.br/batches/[^"]+)"', c)
         pracas = []
         for p in re.finditer(r'<div class="instance[^"]*">(.*?)</div>', c, re.S):
             b = p.group(1)
@@ -209,7 +212,9 @@ def mega(pagina):
             continue
         partes_tit = [x.strip() for x in tit.split(" - ")]
         out.append({"codigo": cod, "link": link.group(1), "titulo": tit, "icone": icone.group(1) if icone else "",
-                    "modalidade": "judicial" if sa(modal).startswith("judicial") else "extrajudicial",
+                    "modalidade": ("judicial" if sa(modal).startswith("judicial") else
+                                   "venda_direta" if re.search(r"venda direta|compra direta|proposta", sa(modal)) else "extrajudicial"),
+                    "foto": foto.group(1) if foto else None,
                     "cidade": loc.group(1).strip() if loc else (partes_tit[-2] if len(partes_tit) >= 3 else None),
                     "uf": loc.group(2) if loc else (partes_tit[-1] if len(partes_tit) >= 3 and re.match(r"^[A-Z]{2}$", partes_tit[-1]) else None),
                     "bairro": partes_tit[1] if len(partes_tit) >= 4 else None,
@@ -246,6 +251,10 @@ def superbid(pagina):
                 "titulo": (p.get("shortDesc") or "").strip(), "vendedor": ((o.get("seller") or {}).get("name") or "").strip(),
                 "evento": ((o.get("auction") or {}).get("desc") or "").strip(),
                 "modalidade_txt": ((o.get("auction") or {}).get("modalityDesc") or "").strip(),
+                "judicial": (o.get("auction") or {}).get("judicialPraca") is not None or any(
+                    sa(x.get("subMarketplaceDesc")) == "judicial" for x in ((o.get("auction") or {}).get("subMarketplaces") or [])),
+                "foto": p.get("thumbnailUrl") or next((g.get("link") for g in (p.get("galleryJson") or [])
+                                                       if str(g.get("link") or "").lower().endswith((".jpg", ".jpeg", ".png", ".webp"))), None),
                 "cidade": cid[0].strip() if cid and cid[0] else None, "uf": cid[1].strip() if len(cid) == 2 else None,
                 "categoria": (sub.get("description") or ""), "grupo": ((sub.get("category") or {}).get("description") or ""),
                 "preco": o.get("price"), "lance_inicial": od.get("initialBidValue") or od.get("currentMinBid"),
