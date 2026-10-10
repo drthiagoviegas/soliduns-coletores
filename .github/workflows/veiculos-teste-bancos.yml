@@ -1,0 +1,34 @@
+# SOLIDUNS — VEÍCULOS: TESTE VIP LEILÕES E SODRÉ SANTORO (v1.0, 10/10/2026)
+# Rotina MANUAL. Não grava no banco e não usa chave nenhuma. Custo zero.
+# Guarda amostras das listas de veículos retomados de bancos (artefato "amostras-bancos-veiculos")
+# para escrever os leitores na versão seguinte. Respeita o robots.txt, 2 s entre pedidos, sem login.
+# Repositório PÚBLICO: nenhuma chave aqui.
+name: Veículos - teste VIP e Sodré
+
+on:
+  workflow_dispatch:
+
+jobs:
+  teste:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install requests
+
+      - name: Ler VIP Leilões e Sodré Santoro
+        run: python coletor/testar_bancos_veiculos.py
+
+      - name: Guardar amostras
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: amostras-bancos-veiculos
+          path: amostras_bancos_veiculos/
+          retention-days: 7
