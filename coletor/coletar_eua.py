@@ -1,5 +1,37 @@
 """
-SOLIDUNS — Coletor do MERCADO AMERICANO (NYSE e Nasdaq) — v1.9 (05/10/2026)
+SOLIDUNS — Coletor do MERCADO AMERICANO (NYSE e Nasdaq) — v1.10 (10/10/2026)
+
+v1.10 (Busca avançada igual à brasileira — sem SQL novo, sem rotina nova):
+a cobertura dos indicadores americanos estava bem abaixo da brasileira
+(margem bruta 41% × 86%; P/Ativo circ. líq. 29% × 86%; CAGR do lucro 34% ×
+63%). Quatro correções, só nas empresas dos EUA:
+  1. LUCRO BRUTO POR DIFERENÇA: muitas empresas não informam "GrossProfit",
+     mas informam a receita e o custo (CostOfRevenue, CostOfGoodsAndServicesSold
+     ou CostOfGoodsSold). Faltando o lucro bruto, ele passa a ser
+     receita − custo, no MESMO período dos 12 meses e só para empresa não
+     financeira. Vale também para o histórico anual (ano a ano). E quando o
+     GrossProfit informado é de um período mais VELHO que a receita (empresa
+     que parou de informar a etiqueta — ex.: Honeywell desde 2020 — ficava
+     com a margem bruta misturando períodos), vale o derivado do período
+     atual. O mesmo para o EBIT velho, na correção 2.
+  2. EBIT DE RESERVA: faltando "OperatingIncomeLoss", o EBIT passa a ser o
+     lucro antes dos impostos + despesa de juros (aproximação usual), só
+     para empresa não financeira (em banco, juro é a operação). Vale também
+     para o histórico anual. Destrava margem EBIT, P/EBIT, EV/EBIT, ROIC e
+     dívida líquida/EBIT.
+  3. HISTÓRICO DE 5 ANOS POR DATA E COM AS ETIQUETAS SOMADAS: para o CAGR e
+     para o histórico anual, os exercícios das VÁRIAS etiquetas de um mesmo
+     conceito agora são juntados (empresa que trocou de etiqueta, ex.:
+     SalesRevenueNet → RevenueFromContract..., não perde os anos antigos); e
+     o exercício "de 5 anos atrás" é achado pela DATA (±45 dias), não pela
+     posição na lista (ano faltando deslocava a conta). Os 12 meses (TTM)
+     continuam numa etiqueta só, como antes.
+  4. MESMA RÉGUA DO BRASIL: P/Capital de giro e Preço/Ativo circulante
+     líquido passam a ser gravados também quando o denominador é negativo
+     (a base brasileira guarda o valor com sinal); e o PEG passa a existir
+     sempre que há P/L e CAGR do lucro (na base brasileira a conta é essa).
+As colunas do banco não mudam; os conceitos novos (custo, lucro antes dos
+impostos, juros) são usados no cálculo e descartados antes de gravar.
 
 v1.9 (v68, SQL 63): depois do cálculo dos BDRs em lotes (v1.8, inalterado),
 chama public.bdrs_calcular_etf() para os BDRs de ETF (final 39), que não têm
@@ -234,6 +266,14 @@ CONCEITOS = {
                 "RevenuesNetOfInterestExpense", "InterestAndDividendIncomeOperating"],
     "lucro_bruto": ["GrossProfit"],
     "ebit": ["OperatingIncomeLoss"],
+    # v1.10 — só para derivar (descartados antes de gravar): custo total da receita
+    # (etiquetas de custo TOTAL; as parciais CostOfServices/CostOfGoods separadas
+    # ficam de fora para não superestimar o lucro bruto), lucro antes dos impostos
+    # e despesa de juros.
+    "custo": ["CostOfRevenue", "CostOfGoodsAndServicesSold", "CostOfGoodsSold"],
+    "lai": ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+            "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"],
+    "juros": ["InterestExpense", "InterestExpenseNonoperating"],
     "lucro_liq": ["NetIncomeLoss", "ProfitLoss", "NetIncomeLossAvailableToCommonStockholdersBasic"],
     "dividendos": ["PaymentsOfDividends", "PaymentsOfDividendsCommonStock"],
     "ativo_total": ["Assets"],
@@ -246,7 +286,8 @@ CONCEITOS = {
     "divida_lp_circ": ["LongTermDebtCurrent"],
     "divida_cp": ["ShortTermBorrowings", "CommercialPaper"],
 }
-FLUXOS = {"receita", "lucro_bruto", "ebit", "lucro_liq", "dividendos"}
+FLUXOS = {"receita", "lucro_bruto", "ebit", "lucro_liq", "dividendos", "custo", "lai", "juros"}
+AUXILIARES = ("custo", "lai", "juros")      # v1.10: entram na derivação e são descartados antes de gravar
 
 
 def _data(s):
@@ -323,12 +364,33 @@ def _ttm(fs):
     return ano["val"] + y["val"] - ant[0]["val"], y["fim"]
 
 
-def _anual(fs, anos_atras):
-    fs = [f for f in _dedup(fs) if f["ini"] and 350 <= (f["fim"] - f["ini"]).days <= 380]
-    fs.sort(key=lambda f: f["fim"])
-    if len(fs) <= anos_atras:
+def _anuais_unidos(gaap, nomes):
+    """v1.10: exercícios ANUAIS de um conceito juntando as etiquetas da lista.
+    Empresa que trocou de etiqueta (ex.: SalesRevenueNet → RevenueFromContract...)
+    não perde os anos antigos. Para um mesmo exercício vale a 1ª etiqueta da
+    lista que o tiver (ordem = prioridade). Devolve [{fim, val}] por data."""
+    por_fim = {}
+    for n in nomes:
+        for f in _dedup(_fatos(gaap, n)):
+            if f["ini"] and 350 <= (f["fim"] - f["ini"]).days <= 380 and f["fim"] not in por_fim:
+                por_fim[f["fim"]] = f["val"]
+    return [{"fim": fim, "val": por_fim[fim]} for fim in sorted(por_fim)]
+
+
+def _cagr_serie(anuais, anos=5, tolerancia=45):
+    """v1.10: CAGR de `anos` anos achando o exercício inicial pela DATA
+    (último exercício − `anos` anos, com `tolerancia` em dias para ano
+    fiscal de 52/53 semanas), e não pela posição na lista — um ano
+    faltando no meio não desloca mais a conta."""
+    if not anuais:
         return None
-    return fs[-1 - anos_atras]["val"]
+    ult = anuais[-1]
+    alvo = ult["fim"] - dt.timedelta(days=round(anos * 365.25))
+    perto = [a for a in anuais if abs((a["fim"] - alvo).days) <= tolerancia]
+    if not perto:
+        return None
+    ini = min(perto, key=lambda a: abs((a["fim"] - alvo).days))
+    return _cagr(ult["val"], ini["val"], anos)
 
 
 def _instantaneo(fs):
@@ -373,10 +435,11 @@ def extrair_empresa(fatos):
         if chave in FLUXOS:
             v, fim = _ttm(fs)
             r[chave + "_ttm"] = v
+            r["_fim_" + chave] = fim                 # v1.10: casar os períodos nas derivações
             if chave == "receita":
-                r["cagr_receitas"] = _cagr(_anual(fs, 0), _anual(fs, 5))
+                r["cagr_receitas"] = _cagr_serie(_anuais_unidos(gaap, nomes))   # v1.10: por data, etiquetas somadas
             if chave == "lucro_liq":
-                r["cagr_lucros"] = _cagr(_anual(fs, 0), _anual(fs, 5))
+                r["cagr_lucros"] = _cagr_serie(_anuais_unidos(gaap, nomes))
         else:
             v, fim = _instantaneo(fs)
             r[chave] = v
@@ -399,10 +462,10 @@ def extrair_empresa(fatos):
 def _historico_anual(gaap, anos=7):
     """v1.4: uma linha por exercício (fim do ano fiscal), últimos `anos`."""
     anual = {}
-    for chave in ("receita", "lucro_bruto", "ebit", "lucro_liq", "dividendos"):
-        for f in _dedup(_escolher_conceito(gaap, CONCEITOS[chave])):
-            if f["ini"] and 350 <= (f["fim"] - f["ini"]).days <= 380:
-                anual.setdefault(f["fim"], {})[chave] = f["val"]
+    for chave in ("receita", "lucro_bruto", "ebit", "lucro_liq", "dividendos") + AUXILIARES:
+        for f in _anuais_unidos(gaap, CONCEITOS[chave]):             # v1.10: etiquetas somadas
+            anual.setdefault(f["fim"], {})[chave] = f["val"]
+    anual = {fim: a for fim, a in anual.items() if any(k in a for k in ("receita", "lucro_bruto", "ebit", "lucro_liq", "dividendos"))}
     if not anual:
         return []
     inst = {}
@@ -418,12 +481,47 @@ def _historico_anual(gaap, anos=7):
     for fim in sorted(anual)[-anos:]:
         a, i = anual[fim], inst.get(fim, {})
         div = [i.get(k) for k in ("divida_lp", "divida_lp_circ", "divida_cp") if i.get(k) is not None]
+        der = {}                                     # v1.10: derivações do ano — só valem para empresa não financeira
+        if a.get("lucro_bruto") is None and a.get("receita") is not None and a.get("custo") is not None:
+            der["lucro_bruto"] = a["receita"] - a["custo"]
+        if a.get("ebit") is None and a.get("lai") is not None:
+            der["ebit"] = a["lai"] + (a.get("juros") or 0)
         linhas[fim.year] = {"ano": fim.year, "dt_refer": fim.isoformat(),
                             "receita": a.get("receita"), "lucro_bruto": a.get("lucro_bruto"), "ebit": a.get("ebit"),
                             "lucro_liq": a.get("lucro_liq"), "dividendos": a.get("dividendos"),
                             "ativo_total": i.get("ativo_total"), "patrimonio_liq": i.get("patrimonio_liq"),
-                            "caixa": i.get("caixa"), "divida_bruta": sum(div) if div else None}
+                            "caixa": i.get("caixa"), "divida_bruta": sum(div) if div else None,
+                            **({"_derivados": der} if der else {})}
     return list(linhas.values())
+
+
+def derivar_fundamentos(l):
+    """v1.10: derivações que dependem de saber se a empresa é financeira,
+    feitas DEPOIS da marcação (main) e ANTES de gravar. Descarta os
+    conceitos auxiliares (custo, lai, juros): as colunas do banco não mudam.
+    - Lucro bruto por diferença: receita − custo, no mesmo período TTM.
+    - EBIT de reserva: lucro antes dos impostos + juros.
+    Em empresa financeira nada é derivado (juros são a operação)."""
+    fin = bool(l.get("financeira"))
+    custo, lai, juros = l.pop("custo_ttm", None), l.pop("lai_ttm", None), l.pop("juros_ttm", None)
+    fins = {k: l.pop("_fim_" + k, None) for k in ("receita", "custo", "lucro_bruto", "ebit", "lai", "juros", "lucro_liq", "dividendos")}
+    if not fin:
+        fr = fins["receita"]
+        # Lucro bruto: deriva quando falta E quando o informado é VELHO (empresa que parou de
+        # informar GrossProfit ficava com a margem bruta misturando períodos — ex.: Honeywell).
+        derivado = (l["receita_ttm"] - custo) if (l.get("receita_ttm") is not None and custo is not None and fr and fins["custo"] == fr) else None
+        if derivado is not None and (l.get("lucro_bruto_ttm") is None or (fins["lucro_bruto"] and fins["lucro_bruto"] < fr)):
+            l["lucro_bruto_ttm"] = derivado
+        # EBIT de reserva: lucro antes dos impostos + juros, no período da receita.
+        juros_ali = juros if (juros is not None and fins["juros"] == fins["lai"]) else 0
+        reserva = (lai + juros_ali) if (lai is not None and (fr is None or fins["lai"] == fr)) else None
+        if reserva is not None and (l.get("ebit_ttm") is None or (fins["ebit"] and fr and fins["ebit"] < fr)):
+            l["ebit_ttm"] = reserva
+    for h in l.get("historico") or []:
+        for k, v in h.pop("_derivados", {}).items():
+            if not fin and h.get(k) is None:
+                h[k] = v
+    return l
 
 
 def _entregas(gaap, anos=3):
@@ -594,7 +692,7 @@ def calcular_indicadores(fund, precos):
             "margem_liquida": _r(_div(ll * 100, rec) if ll is not None else None),
             "p_ebit": _r(_div(vm, ebit)), "ev_ebit": _r(_div(vm + div_liq, ebit) if vm else None),
             "div_liq_ebit": _r(_div(div_liq, ebit)), "div_liq_pl": _r(_div(div_liq, pos(pl_eq))),
-            "psr": _r(_div(vm, rec)), "p_cap_giro": _r(_div(vm, pos(cap_giro))), "p_acl": _r(_div(vm, pos(acl))),
+            "psr": _r(_div(vm, rec)), "p_cap_giro": _r(_div(vm, cap_giro)), "p_acl": _r(_div(vm, acl)),   # v1.10: negativo fica, como no Brasil
             "roe": _r(_div(ll * 100, pos(pl_eq)) if ll is not None else None),
             "roic": _r(_div(ebit * (1 - IR_EUA) * 100, pos((pl_eq or 0) + div_liq)) if ebit is not None else None),
             "roa": _r(_div(ll * 100, at) if ll is not None else None),
@@ -606,7 +704,7 @@ def calcular_indicadores(fund, precos):
             "dt_balanco": f.get("dt_refer"), "dt_preco": data,
         }
         pl, cl = ind["pl"], f.get("cagr_lucros")
-        ind["peg"] = _r(pl / cl) if pl and pl > 0 and cl and cl > 0 else None
+        ind["peg"] = _r(pl / cl) if pl is not None and cl else None   # v1.10: mesma régua do Brasil (PEG sempre que há P/L e CAGR)
         saida.append(ind)
     return saida
 
@@ -981,6 +1079,7 @@ def main():
         fund = limpar(montar_fundamentos(tickers, balancos, sics))
         for l in fund:
             l["financeira"] = eh_financeira(l.get("sic"))
+            derivar_fundamentos(l)                   # v1.10: lucro bruto por diferença e EBIT de reserva
         log(f"{len(fund)} ações com balanço montado")
         if not local:
             fund = list({l["ticker"]: l for l in fund}.values())   # v1.2: um por ticker
@@ -988,7 +1087,7 @@ def main():
             hist = {}                                              # v1.4: histórico anual por empresa
             for cik, b in balancos.items():
                 for h in b.get("historico") or []:
-                    hist[(cik, h["ano"])] = dict(h, cik=cik)
+                    hist[(cik, h["ano"])] = {k: v for k, v in dict(h, cik=cik).items() if not k.startswith("_")}
             gravar_opcional("fundamentos_historico_us", list(hist.values()), "cik,ano")
             entregas = {}                                          # v1.5: datas de entrega (10-Q/10-K)
             for cik, b in balancos.items():
