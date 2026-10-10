@@ -1,5 +1,10 @@
 """
-SOLIDUNS — LEILÃO DE AUTOMÓVEIS — Reconhecimento: VEÍCULOS RETOMADOS DE BANCOS — v1.0 (10/10/2026)
+SOLIDUNS — LEILÃO DE AUTOMÓVEIS — Reconhecimento: VEÍCULOS RETOMADOS DE BANCOS — v1.1 (10/10/2026)
+
+v1.1 (com as amostras da v1.0): a VIP carrega os lotes depois de abrir a página, enviando o formulário para
+"/pesquisa/recuperadofinanciamento?handler=pesquisar" (o mesmo que o navegador faz); a v1.1 repete isso nas páginas
+1 a 3 e abre 2 lotes. Sodré: os lotes vêm de um serviço de busca externo do site; a v1.1 só tenta o arquivo público
+"_payload.json" da página (sem usar chave nenhuma do site).
 
 Rotina MANUAL ("Veículos - teste VIP e Sodré"). Não grava nada no banco e não usa chave nenhuma.
 Objetivo: descobrir COMO as listas de lotes de dois leiloeiros que vendem carros retomados por financiamento
@@ -97,8 +102,12 @@ def campos_formulario(html, ident="formPost"):
             continue
         dados[nome.group(1)] = valor
     for sel in re.finditer(r'<select[^>]*name="([^"]+)"[^>]*>(.*?)</select>', m.group(1), re.S | re.I):
-        op = re.search(r'<option[^>]*selected[^>]*value="([^"]*)"|<option[^>]*value="([^"]*)"[^>]*selected', sel.group(2), re.I)
-        dados[sel.group(1)] = (op.group(1) or op.group(2)) if op else ""
+        ops = re.findall(r"<option([^>]*)>", sel.group(2), re.I)
+        val = (re.search(r'value="([^"]*)"', ops[0]) or [None, ""])[1] if ops else ""   # sem "selected": a 1ª opção
+        for op in re.finditer(r"<option([^>]*)>", sel.group(2), re.I):          # como o navegador: vale o último "selected"
+            if re.search(r"\bselected\b", op.group(1), re.I):
+                val = (re.search(r'value="([^"]*)"', op.group(1)) or [None, ""])[1]
+        dados[sel.group(1)] = val
     return acao, met.lower(), dados
 
 
@@ -111,7 +120,28 @@ def vip():
     if r is None:
         return
     acao, met, dados = campos_formulario(r.text)
-    log(f"  formulário #formPost: ação '{acao}', método {met}, {len(dados)} campo(s): {sorted(dados)[:25]}")
+    log(f"  formulário #formPost: ação '{acao}', método {met}, {len(dados)} campo(s); Procedência = {dados.get('Filtro.Procedencia')!r}")
+    pesq = re.search(r'id="placeholder"[^>]*data-ajax-url="([^"]+)"', r.text)
+    if pesq:
+        url_p = up.urljoin(r.url, pesq.group(1).replace("&amp;", "&"))
+        lotes = []
+        for pag in (1, 2, 3):
+            d = dict(dados)
+            d["Filtro.CurrentPage"] = str(pag)
+            rp_ = pedir(s, "POST", url_p, f"vip_10_lotes_pagina{pag}.html", data=d,
+                        headers={"Referer": r.url, "X-Requested-With": "XMLHttpRequest"})
+            if rp_ is None:
+                break
+            novos = sorted(set(h for h in re.findall(r'href="(/(?:evento|lote|anuncio|veiculo|leilao)[^"#]*)"', rp_.text, re.I)
+                               if "/evento/detalhes/" not in h))
+            log(f"    página {pag}: {len(novos)} link(s) de lote; exemplos {novos[:3]}")
+            lotes += novos
+            if not novos:
+                break
+        for i, l in enumerate(lotes[:2]):
+            pedir(s, "GET", base + l, f"vip_20_lote_{i}.html")
+    else:
+        log("  AVISO: #placeholder com data-ajax-url não encontrado")
     guardar("vip_02_formulario.json", "formPost", 200, json.dumps({"acao": acao, "metodo": met, "campos": dados}, ensure_ascii=False, indent=1))
     if acao is not None:
         destino = up.urljoin(r.url, acao or r.url)
@@ -137,6 +167,8 @@ def sodre():
     r = pedir(s, "GET", base + "/veiculos/lotes?sort=auction_date_init_asc", "sodre_01_veiculos_lotes.html")
     if r is None:
         return
+    for i, u in enumerate([base + "/veiculos/lotes/_payload.json", base + "/veiculos/lotes/_payload.json?sort=auction_date_init_asc"]):
+        pedir(s, "GET", u, f"sodre_10_payload_{i}.json", headers={"Accept": "application/json"})
     rotas = set()
     scripts = sorted(set(re.findall(r'(/_nuxt/[A-Za-z0-9_.-]+\.js)', r.text)))
     log(f"  {len(scripts)} script(s) na página")
