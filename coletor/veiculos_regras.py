@@ -264,7 +264,9 @@ CORES = {"branc": "Branca", "pret": "Preta", "prata": "Prata", "cinz": "Cinza", 
          "verde": "Verde", "amarel": "Amarela", "bege": "Bege", "marrom": "Marrom", "dourad": "Dourada",
          "laranja": "Laranja", "vinho": "Vinho", "rosa": "Rosa", "rox": "Roxa", "grafite": "Grafite", "fantasia": "Fantasia"}
 COMBUSTIVEIS = [(r"\bflex\b|[aá]lcool\s*/\s*gasolina|gasolina\s*/\s*[aá]lcool", "Flex"), (r"\bdiesel\b", "Diesel"),
-                (r"h[ií]brid", "Híbrido"), (r"el[eé]tric", "Elétrico"), (r"\bgnv\b", "GNV"),
+                (r"h[ií]brid", "Híbrido"),
+                (r"combust[ií]vel\s*:?\s*el[eé]tric|\b(?:ve[ií]culo|carro|autom[oó]vel|motor|caminh[aã]o|[oô]nibus|moto|motocicleta)\s+"
+                 r"(?:100\s*%\s+)?el[eé]tric|\b100\s*%\s+el[eé]tric", "Elétrico"), (r"\bgnv\b", "GNV"),
                 (r"\b[aá]lcool\b|\betanol\b", "Álcool"), (r"\bgasolina\b", "Gasolina")]
 RE_SUCATA = re.compile(r"sucata|inserv[ií]ve|irrecuper[aá]ve|fins?\s+de\s+desmontagem|desmanche|baixa\s+definitiva|"
                        r"aproveitamento\s+de\s+pe[cç]as|apenas\s+pe[cç]as|sem\s+direito\s+a\s+documenta", re.I)

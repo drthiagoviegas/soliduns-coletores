@@ -1,0 +1,50 @@
+# SOLIDUNS — LEILÕES DE BANCOS E LEILOEIROS (v1.0, 09/10/2026)
+# Todo dia às 6h50 (Brasília), antes do e-mail de alertas das 7h40. Custo zero (sem IA paga).
+# Lê as páginas públicas do Portal Zuk, Mega Leilões e Superbid (respeita o robots.txt, 2 s entre páginas):
+#   - imóveis de bancos (Bradesco, Itaú, Santander, Sicoob, Inter...) -> Radar de leilões (leiloes_radar)
+#   - veículos -> Leilão de automóveis (veiculos_leiloes)
+# Repositório PÚBLICO: só ${{ secrets.* }}, nenhuma chave aqui.
+name: Leilões - bancos e leiloeiros
+
+on:
+  schedule:
+    - cron: "50 9 * * *"
+  workflow_dispatch:
+    inputs:
+      fontes:
+        description: "Sites a ler (zuk,mega,superbid)"
+        required: false
+        default: "zuk,mega,superbid"
+
+concurrency:
+  group: leiloes-leiloeiros
+  cancel-in-progress: false
+
+jobs:
+  leiloeiros:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install requests
+
+      - name: Imóveis de bancos e veículos (Zuk, Mega, Superbid)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          LEILOEIROS_FONTES: ${{ github.event.inputs.fontes || 'zuk,mega,superbid' }}
+        run: python coletor/coletar_leiloeiros.py
+
+      - name: Tabela FIPE (preços dos veículos novos)
+        if: always()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FIPE_TOKEN: ${{ secrets.FIPE_TOKEN }}
+        run: python coletor/coletar_fipe.py precos
